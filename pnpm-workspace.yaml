@@ -1,0 +1,9 @@
+packages:
+  - .
+allowBuilds:
+  "@tailwindcss/oxide": true
+  esbuild: true
+peerDependencyRules:
+  allowedVersions:
+    # Vite Plus 1.6.0 packages the Vite 8.3.7-compatible core under its own version.
+    vite: "1.6.0"
