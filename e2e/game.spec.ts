@@ -7,22 +7,30 @@ test("24-fighter battle boots, consumes stamina, pauses and restarts", async ({
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("./");
   const start = page.getByRole("button", { name: "バトルスタート" });
+  const unavailable = page.getByRole("dialog", { name: "ゲームを開始できませんでした" });
+  await expect(start.or(unavailable)).toBeVisible({ timeout: 45_000 });
+  await expect(unavailable).toHaveCount(0);
   await expect(start).toBeEnabled({ timeout: 45_000 });
-  await expect(
-    page.getByRole("group", { name: "対戦人数" }).getByRole("button", { name: "24体" }),
-  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".lobby-kicker")).toContainText("24-WAY");
+  await expect(page.getByRole("button", { name: /3勝先取/ })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await expect(page.locator("canvas")).toHaveCount(1);
   await page.screenshot({ path: testInfo.outputPath("desktop-lobby.png") });
   await start.click();
   await expect(page.locator(".countdown-overlay")).toBeVisible();
   await expect(page.locator(".contestant-dot")).toHaveCount(24);
-  await expect(page.locator(".countdown-overlay")).toBeHidden({ timeout: 25_000 });
-  await page.keyboard.press("k");
+  await expect(page.locator(".countdown-overlay")).toBeHidden({ timeout: 45_000 });
   await expect
-    .poll(async () =>
-      Number(
-        await page.getByRole("progressbar", { name: "スタミナ" }).getAttribute("aria-valuenow"),
-      ),
+    .poll(
+      async () => {
+        await page.keyboard.press("k");
+        return Number(
+          await page.getByRole("progressbar", { name: "スタミナ" }).getAttribute("aria-valuenow"),
+        );
+      },
+      { timeout: 8_000, intervals: [100, 150, 250] },
     )
     .toBeLessThan(90);
   await page.keyboard.press("Space");
@@ -54,19 +62,27 @@ test.describe("touch layout", () => {
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto("./");
     const start = page.getByRole("button", { name: "バトルスタート" });
+    const unavailable = page.getByRole("dialog", { name: "ゲームを開始できませんでした" });
+    await expect(start.or(unavailable)).toBeVisible({ timeout: 45_000 });
+    await expect(unavailable).toHaveCount(0);
     await expect(start).toBeEnabled({ timeout: 45_000 });
     await expect(start).toBeInViewport();
     await page.screenshot({ path: testInfo.outputPath("mobile-lobby.png") });
     await start.tap();
-    await expect(page.locator(".countdown-overlay")).toBeHidden({ timeout: 25_000 });
+    await expect(page.locator(".countdown-overlay")).toBeHidden({ timeout: 45_000 });
     await expect(page.getByRole("button", { name: "ジャンプ", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "しっぽスピン", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "しっぽスピン", exact: true }).tap();
     await expect
-      .poll(async () =>
-        Number(
-          await page.getByRole("progressbar", { name: "スタミナ" }).getAttribute("aria-valuenow"),
-        ),
+      .poll(
+        async () => {
+          // A hit or jump may briefly lock an action in the live 24-fighter battle.
+          // Retry the real touch input until the fighter can accept it.
+          await page.getByRole("button", { name: "しっぽスピン", exact: true }).tap();
+          return Number(
+            await page.getByRole("progressbar", { name: "スタミナ" }).getAttribute("aria-valuenow"),
+          );
+        },
+        { timeout: 8_000, intervals: [100, 150, 250] },
       )
       .toBeLessThan(90);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(

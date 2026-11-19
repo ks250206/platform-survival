@@ -90,6 +90,10 @@ export class GameAudio {
       case "collapse":
         this.note(110, 35, 0.45, "triangle");
         break;
+      case "meteor":
+        this.note(95, 28, 0.5, "triangle");
+        this.note(360, 75, 0.24, "sine", 0.02);
+        break;
       case "bounce":
         this.note(280, 700, 0.2);
         break;

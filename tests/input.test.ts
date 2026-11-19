@@ -8,12 +8,14 @@ describe("input boundaries", () => {
   let listeners: Map<string, (event: unknown) => void>;
   let pads: unknown[];
   let modal: boolean;
+  let modalTitle: string;
   const pause = vi.fn();
   const restart = vi.fn();
 
   beforeEach(() => {
     pads = [];
     modal = false;
+    modalTitle = "遊び方";
     listeners = new Map();
     pause.mockReset();
     restart.mockReset();
@@ -22,7 +24,9 @@ describe("input boundaries", () => {
         listeners.set(type, listener),
       removeEventListener: (type: string) => listeners.delete(type),
     });
-    vi.stubGlobal("document", { querySelector: () => (modal ? {} : null) });
+    vi.stubGlobal("document", {
+      querySelector: () => (modal ? { getAttribute: () => modalTitle } : null),
+    });
     vi.stubGlobal("navigator", { getGamepads: () => pads });
     input = new GameInput(pause, restart, vi.fn());
   });
@@ -48,7 +52,9 @@ describe("input boundaries", () => {
   });
 
   it("preserves native Space activation on buttons while allowing movement after resume", () => {
-    const button = { closest: (selector: string) => (selector === "button, a" ? {} : null) };
+    const button = {
+      closest: (selector: string) => (selector === "button, a, summary" ? {} : null),
+    };
     expect(key("Space", button).preventDefault).not.toHaveBeenCalled();
     expect(input.sample().jump).toBe(false);
     key("KeyW", button);
@@ -77,6 +83,25 @@ describe("input boundaries", () => {
     expect(Math.hypot(frame.moveX, frame.moveZ)).toBeCloseTo(1);
     listeners.get("blur")!({});
     expect(input.sample()).toEqual(EMPTY_INPUT);
+  });
+
+  it("allows gamepad Start to resume the pause dialog while retaining other modal guards", () => {
+    modal = true;
+    modalTitle = "一時停止";
+    const buttons = Array.from({ length: 16 }, () => ({ pressed: false }));
+    buttons[9]!.pressed = true;
+    buttons[3]!.pressed = true;
+    pads = [{ connected: true, axes: [0, 0], buttons }];
+    expect(input.sample()).toEqual(EMPTY_INPUT);
+    expect(pause).toHaveBeenCalledTimes(1);
+    input.sample();
+    expect(pause).toHaveBeenCalledTimes(1);
+    buttons[9]!.pressed = false;
+    input.sample();
+    modalTitle = "遊び方";
+    buttons[9]!.pressed = true;
+    input.sample();
+    expect(pause).toHaveBeenCalledTimes(1);
   });
 
   it("turns each press into one action while retaining movement", () => {

@@ -8,7 +8,7 @@ import {
   SphereGeometry,
   TorusGeometry,
 } from "@pixi/3d";
-import type { Fighter } from "./types";
+import type { Fighter, FighterAppearance } from "./types";
 
 const TAU = Math.PI * 2;
 
@@ -34,6 +34,12 @@ export class ArenaMeshes {
     tube: 0.035,
     radialSegments: 4,
     tubularSegments: 32,
+  });
+  readonly accessoryRing = new TorusGeometry({
+    radius: 1,
+    tube: 0.11,
+    radialSegments: 5,
+    tubularSegments: 24,
   });
   readonly arc = makeArc();
   readonly disc = makeDisc();
@@ -113,12 +119,49 @@ export class ArenaMeshes {
       this.cylinder,
       this.cone,
       this.ring,
+      this.accessoryRing,
       this.arc,
       this.disc,
     ]) {
       geometry.destroy(true);
     }
     this.materials.clear();
+  }
+}
+
+/** One small reusable dynamic annulus per meteor, with an exact world-space danger band. */
+export class DynamicRingGeometry extends Geometry3D {
+  private readonly vertices: Float32Array;
+  private readonly segmentCount: number;
+
+  constructor(segments = 64) {
+    const vertices = new Float32Array((segments + 1) * 6);
+    const normals = new Float32Array(vertices.length);
+    const indices: number[] = [];
+    for (let i = 0; i <= segments; i++) {
+      normals[i * 6 + 1] = normals[i * 6 + 4] = 1;
+      if (i < segments) {
+        const v = i * 2;
+        indices.push(v, v + 1, v + 2, v + 1, v + 3, v + 2);
+      }
+    }
+    super({ positions: vertices, normals, indices: new Uint16Array(indices), dynamic: true });
+    this.vertices = vertices;
+    this.segmentCount = segments;
+    this.setRadius(1, 0.1);
+  }
+
+  setRadius(radius: number, halfWidth: number): void {
+    for (let i = 0; i <= this.segmentCount; i++) {
+      const angle = (i / this.segmentCount) * TAU;
+      for (let side = 0; side < 2; side++) {
+        const distance = Math.max(0, radius + (side ? halfWidth : -halfWidth));
+        const index = i * 6 + side * 3;
+        this.vertices[index] = Math.sin(angle) * distance;
+        this.vertices[index + 2] = Math.cos(angle) * distance;
+      }
+    }
+    this.attributes.aPosition!.buffer.update();
   }
 }
 
@@ -187,9 +230,10 @@ export class CreatureMesh {
     isPlayer: boolean,
     private readonly assets: ArenaMeshes,
     scene: Container3D,
+    appearance: FighterAppearance,
   ) {
     const skin = (this.skin = assets.material(color, { roughness: 0.42 }));
-    const footColor = shade(color, 0.62);
+    const footColor = appearance.shoeColor;
     const feet = assets.material(footColor, { roughness: 0.5 });
     const white = assets.material(0xfffdf5);
     const ink = assets.material(0x202447, { roughness: 0.8 });
@@ -260,7 +304,18 @@ export class CreatureMesh {
         assets.ball(this.tail, skin, x!, y!, z!, radius!, radius!, radius! * 1.4, true),
       );
     }
-    assets.ball(this.tail, gold, 0.7, 0.4, -1.05, 0.19, 0.24, 0.21, true);
+    assets.ball(
+      this.tail,
+      assets.material(appearance.tailTipColor, { roughness: 0.4 }),
+      0.7,
+      0.4,
+      -1.05,
+      0.19,
+      0.24,
+      0.21,
+      true,
+    );
+    this.buildAccessory(appearance);
 
     this.shadow = assets.mesh(
       scene,
@@ -324,6 +379,80 @@ export class CreatureMesh {
     this.heldItem.visible = false;
   }
 
+  private buildAccessory(appearance: FighterAppearance): void {
+    const a = this.assets;
+    const color = a.material(appearance.accessoryColor, { roughness: 0.45 });
+    const dark = a.material(0x29354f, { roughness: 0.6 });
+    switch (appearance.accessory) {
+      case "glasses": {
+        const lens = a.material(0xb4e8ef, { alpha: 0.22, roughness: 0.22 });
+        for (const side of [-1, 1]) {
+          const frame = a.mesh(
+            this.model,
+            a.accessoryRing,
+            color,
+            side * 0.205,
+            0.13,
+            0.635,
+            0.18,
+            0.9,
+            0.21,
+          );
+          frame.rotation.x = Math.PI / 2;
+          const glass = a.mesh(this.model, a.disc, lens, side * 0.205, 0.13, 0.639, 0.15, 1, 0.18);
+          glass.rotation.x = Math.PI / 2;
+          a.box(this.model, color, side * 0.375, 0.13, 0.47, 0.045, 0.045, 0.34);
+        }
+        a.box(this.model, color, 0, 0.17, 0.645, 0.095, 0.045, 0.045);
+        break;
+      }
+      case "visor": {
+        // A rounded sun visor shades the eyes without hiding their expressions.
+        a.mesh(this.model, a.cylinder, color, 0, 0.39, 0, 0.52, 0.085, 0.5);
+        a.ball(this.model, color, 0, 0.34, 0.44, 0.51, 0.07, 0.33, true);
+        a.ball(this.model, a.material(0xfff8ec), 0.19, 0.405, 0.54, 0.07, 0.018, 0.055, true);
+        break;
+      }
+      case "headband": {
+        a.mesh(this.model, a.cylinder, color, 0, 0.34, 0, 0.55, 0.105, 0.52);
+        a.ball(this.model, color, 0.48, 0.35, -0.19, 0.13, 0.12, 0.12, true);
+        const ribbon = a.box(this.model, color, 0.52, 0.2, -0.25, 0.1, 0.32, 0.035);
+        ribbon.rotation.z = -0.35;
+        break;
+      }
+      case "headphones": {
+        const hoop = a.mesh(this.model, a.accessoryRing, color, 0, 0.035, -0.025, 0.66, 1.1, 0.65);
+        hoop.rotation.x = Math.PI / 2;
+        for (const side of [-1, 1]) {
+          a.ball(this.model, dark, side * 0.59, 0.08, 0.02, 0.13, 0.23, 0.2, true);
+          a.ball(this.model, color, side * 0.68, 0.08, 0.02, 0.12, 0.21, 0.18, true);
+          a.ball(
+            this.model,
+            a.material(0xfff5e4),
+            side * 0.77,
+            0.08,
+            0.02,
+            0.025,
+            0.08,
+            0.08,
+            true,
+          );
+        }
+        break;
+      }
+      case "bow": {
+        for (const side of [-1, 1]) {
+          const loop = a.ball(this.model, color, side * 0.16, 0.65, 0.19, 0.23, 0.14, 0.095, true);
+          loop.rotation.z = side * 0.35;
+        }
+        a.ball(this.model, color, 0, 0.64, 0.21, 0.09, 0.11, 0.1, true);
+        break;
+      }
+      case "none":
+        break;
+    }
+  }
+
   update(f: Fighter, time: number, dt: number, onFloor: boolean): void {
     const p = f.actionDuration > 0 ? Math.min(1, f.actionTime / f.actionDuration) : 0;
     const speed = Math.hypot(f.vx, f.vz);
@@ -375,6 +504,9 @@ export class CreatureMesh {
     this.shadow.scale.set(0.7 * shadowSize, 1, 0.58 * shadowSize);
     this.marker.visible = f.isPlayer && f.alive && onFloor;
     this.marker.position.set(f.x, 0.045, f.z);
+    this.marker.material = this.assets.material(f.outsideZoneTime > 0 ? 0xff9c80 : 0xffffff, {
+      glow: 0.45,
+    });
     this.marker.scale.set(0.8 + Math.sin(time * 4) * 0.025);
     this.arrow.visible = f.isPlayer && f.alive;
     this.arrow.position.set(f.x, f.y + 1.95 + Math.sin(time * 4) * 0.06, f.z);

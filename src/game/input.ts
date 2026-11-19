@@ -49,7 +49,8 @@ export class GameInput {
       el?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')
     )
       return;
-    if ((event.code === "Space" || event.code === "Enter") && el?.closest("button, a")) return;
+    if ((event.code === "Space" || event.code === "Enter") && el?.closest("button, a, summary"))
+      return;
     if (movement.has(event.code) || bindings[event.code]) event.preventDefault();
     this.keys.add(event.code);
     if (event.repeat) return;
@@ -77,7 +78,9 @@ export class GameInput {
   }
 
   sample(): InputFrame {
-    const modalOpen = Boolean(document.querySelector('[role="dialog"]'));
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const modalOpen = Boolean(dialog);
+    const canTogglePause = !modalOpen || dialog?.getAttribute("aria-label") === "一時停止";
     let x =
       Number(this.keys.has("KeyD") || this.keys.has("ArrowRight")) -
       Number(this.keys.has("KeyA") || this.keys.has("ArrowLeft")) +
@@ -106,7 +109,7 @@ export class GameInput {
         if (!modalOpen && pad.buttons[i]?.pressed && !this.gamepadButtons.has(i))
           this.queued.add(action);
       }
-      if (!modalOpen && pad.buttons[9]?.pressed && !this.gamepadButtons.has(9)) this.onPause();
+      if (canTogglePause && pad.buttons[9]?.pressed && !this.gamepadButtons.has(9)) this.onPause();
       this.gamepadButtons = new Set(
         pad.buttons.map((b, i) => (b.pressed ? i : -1)).filter((i) => i >= 0),
       );
