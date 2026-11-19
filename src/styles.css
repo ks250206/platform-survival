@@ -1943,6 +1943,20 @@ kbd {
     top: 63px;
   }
 }
+@media (pointer: coarse) and (max-width: 760px) and (orientation: portrait) {
+  .is-match .match-status {
+    top: 48px;
+    width: 96px;
+    height: 71px;
+    padding: 5px 6px;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+  }
+  .is-match .match-status .status-divider {
+    display: none;
+  }
+}
 @media (max-width: 760px) and (max-height: 740px) and (orientation: portrait) {
   .lobby-card {
     padding: 14px 19px 15px;
