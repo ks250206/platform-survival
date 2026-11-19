@@ -66,6 +66,7 @@ test("series carries scores and identities through next rounds, crowns3wins and 
       .toBe(wins);
     await page.screenshot({
       path: info.outputPath(wins === 3 ? "series-champion.png" : `round-${wins}-result.png`),
+      animations: "disabled",
     });
     if (wins < 3) {
       await page.getByRole("button", { name: "次のラウンドへ", exact: true }).click();
@@ -118,12 +119,51 @@ test("all eight stage previews rebuild their geometry and single mode remains pl
       .toBe(stage);
     await page.screenshot({ path: info.outputPath(`stage-${stage}.png`) });
   }
+  await page.locator(".lobby-advanced > summary").click();
+  const bodyColor = page
+    .getByRole("group", { name: "ボディの色", exact: true })
+    .getByRole("button")
+    .nth(4);
+  await bodyColor.click();
+  await expect(bodyColor).toHaveAttribute("aria-pressed", "true");
+  await page.getByLabel("しっぽの先を自由に選ぶ", { exact: true }).fill("#ff714c");
+  await page.getByLabel("足の色を自由に選ぶ", { exact: true }).fill("#542ea7");
+  await page.getByLabel("アクセサリー", { exact: true }).selectOption("bow");
+  await page.getByLabel("アクセサリーの色を自由に選ぶ", { exact: true }).fill("#ffe36a");
+  const appearance = {
+    tailTipColor: 0xff714c,
+    shoeColor: 0x542ea7,
+    accessory: "bow",
+    accessoryColor: 0xffe36a,
+  };
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as DebugWindow).__TAILSPIN__!.engine.state.fighters[0]!.appearance,
+      ),
+    )
+    .toEqual(appearance);
+  await page.screenshot({ path: info.outputPath("customized-lobby.png") });
   await page.getByRole("button", { name: /1戦勝負/ }).click();
   await page.getByRole("button", { name: "バトルスタート" }).click();
   await awardRound(page, 0);
   await expect(page.getByRole("dialog", { name: "バトル結果", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "次のラウンドへ", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /もう一度あそぶ/ })).toBeVisible();
+  const playedSeed = await page.evaluate(
+    () => (window as DebugWindow).__TAILSPIN__!.engine.state.options.seed,
+  );
+  await page.getByRole("button", { name: "ロビーに戻る", exact: true }).click();
+  await expect(page.getByLabel("ステージ", { exact: true })).toHaveValue("chaos");
+  await expect(page.locator(".arena-caption strong")).toHaveText("カオス・カーニバル");
+  await page.getByLabel("ステージ", { exact: true }).selectOption("safezone");
+  await expect(page.locator(".arena-caption strong")).toHaveText("ワンダリング・セーフティ");
+  expect(
+    await page.evaluate(() => {
+      const state = (window as DebugWindow).__TAILSPIN__!.engine.state;
+      return { seed: state.options.seed, appearance: state.fighters[0]!.appearance };
+    }),
+  ).toEqual({ seed: playedSeed, appearance });
   expect(errors).toEqual([]);
 });
 

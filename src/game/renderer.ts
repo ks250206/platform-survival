@@ -1344,7 +1344,8 @@ export class ArenaRenderer {
         this.fighters.delete(id);
       }
     }
-    for (const fighter of state.fighters) this.updateFighter(fighter, state, dt);
+    for (const fighter of state.fighters)
+      this.updateFighter(fighter, state, state.phase === "paused" ? 0 : dt);
     const bumperIds = new Set(state.bumpers.map((bumper) => bumper.id));
     for (const [id, entry] of this.bumpers)
       if (!bumperIds.has(id)) {

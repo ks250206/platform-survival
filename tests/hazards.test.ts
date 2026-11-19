@@ -326,4 +326,50 @@ describe("safe-zone integration and CPU floor navigation", () => {
     }
     expect(bot.x).toBeGreaterThan(0);
   });
+
+  it.each(["hammer", "attack"] as const)(
+    "CPU declines a %s dodge that would roll into a hole but still rolls on safe floor",
+    (threat) => {
+      for (const nearHole of [true, false]) {
+        const engine = new GameEngine({
+          playerCount: 4,
+          stage: "holes",
+          mode: "single",
+          seed: 5821,
+        });
+        engine.state.phase = "playing";
+        engine.state.pickups = [];
+        engine.state.tiles.forEach((tile) => {
+          delete tile.trap;
+        });
+        for (const fighter of engine.state.fighters) {
+          fighter.alive = fighter.id < 2;
+          fighter.isPlayer = true;
+          fighter.invulnerable = 5;
+        }
+        const [target, bot] = engine.state.fighters;
+        const z = nearHole ? 0 : 5.4;
+        Object.assign(bot!, { x: 5, z, isPlayer: false, aiTimer: 0 });
+        Object.assign(target!, { x: 3.5, z });
+        if (threat === "hammer") {
+          const hammer = engine.state.hammers[0]!;
+          engine.state.hammers = [hammer];
+          Object.assign(hammer, {
+            pivot: { x: 5, y: 4.2, z: z + 1.5 },
+            speed: 0,
+            phase: 0,
+          });
+        } else {
+          engine.state.hammers = [];
+          Object.assign(target!, { action: "strong", actionTime: 0, actionDuration: 5 });
+        }
+        engine.step(EMPTY_INPUT, dt);
+        expect(bot!.action === "roll").toBe(!nearHole);
+        advance(engine, 0.55);
+        expect(bot!.alive).toBe(true);
+        expect(bot!.y).toBeGreaterThanOrEqual(0);
+        expect(engine.tileAt(bot!.x, bot!.z)).toBeDefined();
+      }
+    },
+  );
 });

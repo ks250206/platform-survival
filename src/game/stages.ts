@@ -408,6 +408,35 @@ export function createStagePlan(options: GameOptions, round: number): StagePlan 
 
   // Farthest-point placement spreads 24 bodies over actual floor, never over a hole.
   // Start the human on an inner supported tile; rotate tie-breaking each round.
+  // Reserve the first few frames of moving hazard space as well as their anchors.
+  const safeOpening = (tile: Tile): boolean => {
+    if (spinners.some((bar) => Math.hypot(tile.x - bar.x, tile.z - bar.z) < 1.5)) return false;
+    if (bumpers.some((bumper) => Math.hypot(tile.x - bumper.x, tile.z - bumper.z) < 1.35))
+      return false;
+    for (const time of [0, 0.18, 0.36]) {
+      for (const bar of spinners) {
+        const angle = bar.angle + bar.speed * time;
+        const dx = tile.x - bar.x;
+        const dz = tile.z - bar.z;
+        const along = dx * Math.cos(angle) - dz * Math.sin(angle);
+        const across = dx * Math.sin(angle) + dz * Math.cos(angle);
+        if (Math.abs(along) < bar.radius + 0.4 && Math.abs(across) < 0.85) return false;
+      }
+      for (const item of hammers) {
+        const angle = Math.sin(time * item.speed + item.phase) * item.amplitude;
+        const swing = Math.sin(angle) * item.length;
+        const x = item.pivot.x + (item.axis === "x" ? swing : 0);
+        const z = item.pivot.z + (item.axis === "z" ? swing : 0);
+        const y = item.pivot.y - Math.cos(angle) * item.length;
+        if (
+          Math.abs(0.65 - y) < item.radius + 0.8 &&
+          Math.hypot(tile.x - x, tile.z - z) < item.radius + 0.7
+        )
+          return false;
+      }
+    }
+    return true;
+  };
   const candidates = shuffled(
     tiles.filter(
       (tile) =>
@@ -415,17 +444,16 @@ export function createStagePlan(options: GameOptions, round: number): StagePlan 
         tile.kind === "normal" &&
         !tile.trap &&
         !tile.conveyor &&
-        spinners.every((bar) => Math.hypot(tile.x - bar.x, tile.z - bar.z) > 1.5) &&
-        bumpers.every((bumper) => Math.hypot(tile.x - bumper.x, tile.z - bumper.z) > 1.1) &&
-        hammers.every((item) => Math.hypot(tile.x - item.pivot.x, tile.z - item.pivot.z) > 1.3),
+        safeOpening(tile),
     ),
     options.seed ^ Math.imul(round, 0x45d9f3b),
   );
-  const fallback = tiles.filter((tile) => tile.kind === "normal");
+  const fallback = tiles.filter((tile) => tile.kind === "normal" && safeOpening(tile));
   const pool =
     candidates.length >= options.playerCount
       ? candidates
       : [...candidates, ...fallback.filter((tile) => !candidates.includes(tile))];
+  if (pool.length < options.playerCount) throw new Error("ステージに安全な開始位置が足りません");
   const first = pool.reduce((best, tile) => {
     const score = Math.abs(Math.hypot(tile.x, tile.z) - 4.2) + (tile.z < 0 ? 1 : 0);
     const old = Math.abs(Math.hypot(best.x, best.z) - 4.2) + (best.z < 0 ? 1 : 0);

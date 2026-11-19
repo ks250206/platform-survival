@@ -987,6 +987,22 @@ export class GameEngine implements GameController {
     return true;
   }
 
+  /** A roll cannot steer or brake; reserve its complete travel and landing first. */
+  private safeRollPath(fighter: Fighter, input: InputFrame): boolean {
+    const direction =
+      Math.hypot(input.moveX, input.moveZ) > 0.12
+        ? normalized(input.moveX, input.moveZ)
+        : { x: Math.sin(fighter.facing), z: Math.cos(fighter.facing) };
+    const travel = 3.5;
+    const clearance = FIGHTER_RADIUS * 0.7;
+    for (const offset of [-clearance, 0, clearance]) {
+      const x = fighter.x + direction.z * offset;
+      const z = fighter.z - direction.x * offset;
+      if (!this.floorAlong(x, z, x + direction.x * travel, z + direction.z * travel)) return false;
+    }
+    return true;
+  }
+
   /** Cached BFS follows real floor. A jump edge spans at most one missing cell. */
   private routeBot(
     fighter: Fighter,
@@ -1244,7 +1260,8 @@ export class GameEngine implements GameController {
       fighter.stamina >= ROLL_COST &&
       state.hammers.some(
         (hammer) => hammer.y < 1.7 && Math.hypot(fighter.x - hammer.x, fighter.z - hammer.z) < 1.7,
-      )
+      ) &&
+      this.safeRollPath(fighter, input)
     ) {
       input.roll = true;
       return input;
@@ -1265,7 +1282,8 @@ export class GameEngine implements GameController {
       distance < 2.3 &&
       fighter.grounded &&
       fighter.stamina >= ROLL_COST + 10 &&
-      this.random() < 0.5
+      this.random() < 0.5 &&
+      this.safeRollPath(fighter, input)
     )
       input.roll = true;
     else if (fighter.item && distance > 2.6 && distance < 8) {

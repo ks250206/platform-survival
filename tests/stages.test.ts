@@ -1,9 +1,30 @@
 import { describe, expect, it } from "vite-plus/test";
 import { DEFAULT_OPTIONS, COLORS, TILE_SIZE } from "../src/game/types";
 import { appearanceForFighter } from "../src/game/appearance";
+import { GameEngine } from "../src/game/engine";
+import { EMPTY_INPUT } from "../src/game/types";
 import { createStagePlan, stageIdForRound, stageStateForRound, STAGES } from "../src/game/stages";
 
 describe("composable stage presets", () => {
+  it("never spawns a fighter into an immediate hammer or spinner hit", () => {
+    for (const definition of STAGES) {
+      for (const seed of [1, 5821, 90909]) {
+        const engine = new GameEngine({ stage: definition.id, seed });
+        engine.start();
+        for (let round = 1; round <= 5; round++) {
+          engine.state.phase = "playing";
+          engine.step(EMPTY_INPUT, 1 / 60);
+          expect(
+            engine.state.fighters.every((fighter) => fighter.damage === 0),
+            `${definition.id} round${round} seed${seed}`,
+          ).toBe(true);
+          for (const fighter of engine.state.fighters) fighter.alive = fighter.id === round;
+          engine.step(EMPTY_INPUT, 1 / 60);
+          engine.nextRound();
+        }
+      }
+    }
+  });
   it("places every fighter on a distinct supported tile in every layout and tier", () => {
     for (const definition of STAGES) {
       for (const round of [1, 3, 7]) {

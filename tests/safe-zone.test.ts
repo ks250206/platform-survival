@@ -90,4 +90,37 @@ describe("moving safe zone", () => {
       zone.targetRadius - 1,
     );
   });
+  it("does not send a CPU into the future circle before that circle becomes safe", () => {
+    const state = fixture();
+    const zone = state.safeZone!;
+    Object.assign(zone, {
+      x: 0,
+      z: 0,
+      radius: 2.6,
+      targetX: 3.8,
+      targetZ: 0,
+      targetRadius: 2.6,
+      phase: "warning",
+      timer: 4,
+      duration: 4,
+      wave: 9,
+    });
+    const fighter = state.fighters[0]!;
+    fighter.x = 0.8;
+    fighter.z = 2.4;
+    for (let frame = 0; frame < 12 * 60; frame++) {
+      const target = safeZoneNavigationTarget(state, fighter);
+      if (target) {
+        const dx = target.x - fighter.x;
+        const dz = target.z - fighter.z;
+        const length = Math.hypot(dx, dz);
+        const amount = length > 0 ? Math.min(1, 4.8 / 60 / length) : 0;
+        fighter.x += dx * amount;
+        fighter.z += dz * amount;
+      }
+      expect(updateSafeZone(state, 1 / 60)).not.toContain(fighter.id);
+      if (zone.phase === "warning") expect(fighter.outsideZoneTime).toBe(0);
+    }
+    expect(Math.hypot(fighter.x - zone.x, fighter.z - zone.z)).toBeLessThan(zone.radius);
+  });
 });

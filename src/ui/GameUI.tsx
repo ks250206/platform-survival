@@ -920,7 +920,7 @@ export function GameUI(props: GameUIProps) {
     onAction,
     onMove,
   } = props;
-  const [options, setOptions] = useState<GameOptions>({ ...DEFAULT_OPTIONS });
+  const options = state.options;
   const [help, setHelp] = useState(false);
   const resumeAfterHelp = useRef(false);
   const player = state.fighters.find((fighter) => fighter.isPlayer) ?? state.fighters[0];
@@ -930,12 +930,10 @@ export function GameUI(props: GameUIProps) {
   const active = state.phase === "playing" || state.phase === "countdown";
   const isSeries = state.options.mode === "first-to-three";
   const definition = getStageDefinition(state.stage.id);
-  const preview = getRoundPreview(options, 1);
+  const preview = { ...state.stage, definition };
   const leader = sortedStandings(state)[0];
   const updateOptions = (changes: Partial<GameOptions>) => {
-    const next = { ...options, ...changes };
-    setOptions(next);
-    onPreview(next);
+    onPreview({ ...options, ...changes });
   };
   const updateAppearance = (changes: Partial<FighterAppearance>) =>
     updateOptions({ playerAppearance: { ...options.playerAppearance, ...changes } });

@@ -101,8 +101,22 @@ export function safeZoneNavigationTarget(
   const dx = fighter.x - x;
   const dz = fighter.z - z;
   const distance = Math.hypot(dx, dz);
-  if (distance < Math.max(0.4, radius - 1.4)) return null;
+  const currentDistance = Math.hypot(fighter.x - zone.x, fighter.z - zone.z);
+  if (distance < Math.max(0.4, radius - 1.4) && currentDistance < zone.radius - 0.5) return null;
   const landingRadius = Math.max(0, radius - 2.1);
   const scale = distance > 0.0001 ? landingRadius / distance : 0;
-  return { x: x + dx * scale, z: z + dz * scale };
+  const destination = { x: x + dx * scale, z: z + dz * scale };
+  if (anticipating) {
+    // A forecast is not safe yet. Leave enough margin in the active circle for
+    // navigation to round this staging point to a supported tile center.
+    const offsetX = destination.x - zone.x;
+    const offsetZ = destination.z - zone.z;
+    const distanceFromCurrent = Math.hypot(offsetX, offsetZ);
+    const currentInterior = Math.max(0, zone.radius - Math.min(1.4, zone.radius * 0.5));
+    if (distanceFromCurrent > currentInterior && distanceFromCurrent > 0.0001) {
+      destination.x = zone.x + (offsetX * currentInterior) / distanceFromCurrent;
+      destination.z = zone.z + (offsetZ * currentInterior) / distanceFromCurrent;
+    }
+  }
+  return destination;
 }
