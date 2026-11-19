@@ -16,7 +16,11 @@ const stages: StageId[] = [
 
 async function ready(page: Page) {
   await page.goto("./");
-  await expect(page.getByRole("button", { name: "バトルスタート" })).toBeEnabled({
+  const start = page.getByRole("button", { name: "バトルスタート" });
+  const unavailable = page.getByRole("dialog", { name: "ゲームを開始できませんでした" });
+  await expect(start.or(unavailable)).toBeVisible({ timeout: 45_000 });
+  await expect(unavailable).toHaveCount(0);
+  await expect(start).toBeEnabled({
     timeout: 45_000,
   });
 }

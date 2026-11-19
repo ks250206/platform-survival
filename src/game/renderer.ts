@@ -248,7 +248,7 @@ export class ArenaRenderer {
       app.ticker.stop();
       return new ArenaRenderer(app, host);
     } catch (error) {
-      if (app.renderer) app.destroy(true, { children: true });
+      if (app.renderer) app.destroy({ removeView: true }, { children: true });
       throw error;
     }
   }
@@ -1406,6 +1406,8 @@ export class ArenaRenderer {
     this.safeZoneView?.geometry.destroy(true);
     this.assets.destroy();
     this.skyTexture.destroy(true);
-    this.app.destroy(true, { children: true });
+    // A canceled async setup can finish after another renderer has started.
+    // Boolean `true` also releases Pixi's global geometry pools used by that renderer.
+    this.app.destroy({ removeView: true }, { children: true });
   }
 }

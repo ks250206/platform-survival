@@ -121,8 +121,12 @@ export function App() {
     const observer = new ResizeObserver(() => renderer?.resize());
     observer.observe(element);
 
-    void ArenaRenderer.create(element)
+    // StrictMode cleans up its first effect before this microtask. Avoid allocating
+    // a discarded GPU renderer that could tear down shared resources during startup.
+    void Promise.resolve()
+      .then(() => (cancelled ? null : ArenaRenderer.create(element)))
       .then((instance) => {
+        if (!instance) return;
         if (cancelled) {
           instance.destroy();
           return;

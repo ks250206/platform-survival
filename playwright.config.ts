@@ -5,7 +5,8 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 1 : 0,
-  timeout: 90_000,
+  // Software WebGL on CI can take longer to render all eight stage previews.
+  timeout: 120_000,
   expect: { timeout: 20_000 },
   reporter: [["list"]],
   use: {
