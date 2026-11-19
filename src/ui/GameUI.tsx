@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent, ReactNode } from "react";
-import { COLORS, DEFAULT_OPTIONS, MAX_STAMINA } from "../game/types";
-import type { Difficulty, GameOptions, GameState } from "../game/types";
+import { COLORS, DEFAULT_APPEARANCE, DEFAULT_OPTIONS, MAX_STAMINA } from "../game/types";
+import type {
+  Accessory,
+  Difficulty,
+  Fighter,
+  FighterAppearance,
+  GameOptions,
+  GameState,
+  StageSelection,
+} from "../game/types";
+import { getRoundPreview, getStageDefinition, STAGES } from "../game/stages";
+import type { StageShape } from "../game/stages";
+import { ACCESSORIES, ACCENT_COLORS } from "../game/appearance";
 
 type GameAction = "jump" | "weak" | "strong" | "roll" | "throw";
 type IconName =
@@ -31,6 +42,8 @@ export interface GameUIProps {
   muted: boolean;
   fps: number;
   onStart: (options: Partial<GameOptions>) => void;
+  onNextRound: () => void;
+  onPreview: (options: Partial<GameOptions>) => void;
   onTogglePause: () => void;
   onHome: () => void;
   onRetry: () => void;
@@ -151,7 +164,15 @@ function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
   );
 }
 
-function Mascot({ color, className = "" }: { color: number; className?: string }) {
+function Mascot({
+  color,
+  className = "",
+  appearance = DEFAULT_APPEARANCE,
+}: {
+  color: number;
+  className?: string;
+  appearance?: FighterAppearance;
+}) {
   return (
     <svg className={`mascot ${className}`} viewBox="0 0 116 95" aria-hidden="true">
       <path
@@ -168,8 +189,34 @@ function Mascot({ color, className = "" }: { color: number; className?: string }
         strokeWidth="10"
         strokeLinecap="round"
       />
-      <ellipse cx="35" cy="81" rx="15" ry="8" fill="#243642" transform="rotate(-12 35 81)" />
-      <ellipse cx="69" cy="81" rx="15" ry="8" fill="#243642" transform="rotate(12 69 81)" />
+      <circle
+        cx="86"
+        cy="31"
+        r="6"
+        fill={hex(appearance.tailTipColor)}
+        stroke="#223842"
+        strokeWidth="2"
+      />
+      <ellipse
+        cx="35"
+        cy="81"
+        rx="15"
+        ry="8"
+        fill={hex(appearance.shoeColor)}
+        stroke="#223842"
+        strokeWidth="2"
+        transform="rotate(-12 35 81)"
+      />
+      <ellipse
+        cx="69"
+        cy="81"
+        rx="15"
+        ry="8"
+        fill={hex(appearance.shoeColor)}
+        stroke="#223842"
+        strokeWidth="2"
+        transform="rotate(12 69 81)"
+      />
       <ellipse cx="52" cy="49" rx="36" ry="34" fill={hex(color)} stroke="#223842" strokeWidth="3" />
       <ellipse cx="40" cy="45" rx="4" ry="8" fill="#223842" />
       <ellipse cx="62" cy="45" rx="4" ry="8" fill="#223842" />
@@ -192,6 +239,49 @@ function Mascot({ color, className = "" }: { color: number; className?: string }
         opacity=".45"
         strokeLinecap="round"
       />
+      {appearance.accessory === "glasses" && (
+        <g fill="none" stroke={hex(appearance.accessoryColor)} strokeWidth="3">
+          <circle cx="40" cy="46" r="10" />
+          <circle cx="63" cy="46" r="10" />
+          <path d="M50 45h3M30 44l-5-2M73 44l5-2" />
+        </g>
+      )}
+      {appearance.accessory === "visor" && (
+        <path
+          d="M22 33Q52 18 82 34L81 42Q51 29 21 42Z"
+          fill={hex(appearance.accessoryColor)}
+          stroke="#223842"
+          strokeWidth="1.5"
+        />
+      )}
+      {appearance.accessory === "headband" && (
+        <g
+          fill="none"
+          stroke={hex(appearance.accessoryColor)}
+          strokeWidth="7"
+          strokeLinecap="round"
+        >
+          <path d="M24 33Q51 18 79 34M23 33l-9 7M23 33l-6-10" />
+        </g>
+      )}
+      {appearance.accessory === "headphones" && (
+        <g fill={hex(appearance.accessoryColor)} stroke="#223842" strokeWidth="1.5">
+          <path
+            d="M18 48V36a34 28 0 0 1 68 0v12"
+            fill="none"
+            stroke={hex(appearance.accessoryColor)}
+            strokeWidth="6"
+          />
+          <rect x="12" y="42" width="12" height="22" rx="5" />
+          <rect x="80" y="42" width="12" height="22" rx="5" />
+        </g>
+      )}
+      {appearance.accessory === "bow" && (
+        <g fill={hex(appearance.accessoryColor)} stroke="#223842" strokeWidth="1.5">
+          <path d="m70 19-15-8-2 19 17-4 16 10 5-19Z" />
+          <circle cx="70" cy="23" r="5" />
+        </g>
+      )}
     </svg>
   );
 }
@@ -242,7 +332,7 @@ function Dialog({
     const getButtons = () =>
       Array.from(
         dialog?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), [href], input, select, [tabindex="0"]',
+          'button:not(:disabled), [href], input, select, summary, [tabindex="0"]',
         ) ?? [],
       );
     getButtons()[0]?.focus({ preventScroll: true });
@@ -312,6 +402,7 @@ function ControlsHelp({ onClose }: { onClose: () => void }) {
     [<kbd>SHIFT</kbd>, "ローリング回避", "出だしに短い無敵時間。終わり際に隙"],
     [<kbd>E</kbd>, "スターを投げる", "拾ったスターを向いている方向へ"],
     [<kbd>ESC</kbd>, "一時停止", "いつでもひと休み"],
+    [<kbd>R</kbd>, "最初からやり直す", "3勝先取ではシリーズの勝利数もリセット"],
   ];
   return (
     <Dialog title="遊び方と操作" onDismiss={onClose} className="help-dialog">
@@ -325,6 +416,15 @@ function ControlsHelp({ onClose }: { onClose: () => void }) {
       <p className="help-intro">
         ％がたまるほど遠くに吹っ飛びます。しっぽ・回避・ジャンプを使い分けて、24体の中で最後のひとりを目指そう。
       </p>
+      <div className="help-stage-note">
+        <strong>3勝先取では、先に3ラウンド勝ったキャラが優勝。</strong>
+        <span>
+          ラウンドが進むと仕掛けが増えて加速します。隕石の赤い予告円から離れ、着弾後の衝撃波はジャンプで避けよう。
+        </span>
+        <span>
+          安全地帯のステージでは床が残り、円が移動します。円の外に4秒いると脱落。次の円へ先回りしよう。
+        </span>
+      </div>
       <div className="control-list">
         {rows.map(([keys, label, description]) => (
           <div className="control-row" key={label}>
@@ -341,7 +441,7 @@ function ControlsHelp({ onClose }: { onClose: () => void }) {
         <p>
           <strong>しっぽスピンはスタミナ25、回避は28。</strong>
           <br />
-          使い切る前に距離を取って回復。光る外周の床は、まもなく崩れます。
+          使い切る前に距離を取って回復。崩落ステージでは、光り始めた外周に注意。
         </p>
       </div>
       <p className="help-touch">
@@ -487,6 +587,322 @@ function TouchControls({
   );
 }
 
+const BODY_COLOR_NAMES = [
+  "ミント",
+  "アプリコット",
+  "ラベンダー",
+  "ピンク",
+  "スカイ",
+  "クリーム",
+  "ピーチ",
+  "リーフ",
+  "ローズ",
+  "コーンフラワー",
+  "キャラメル",
+  "ジェード",
+  "ライラック",
+  "アイスブルー",
+  "マスタード",
+  "オーキッド",
+  "ライム",
+  "コーラル",
+  "スチールブルー",
+  "ピスタチオ",
+  "ベビーピンク",
+  "すみれ",
+  "サンド",
+  "アクア",
+];
+const ACCENT_COLOR_NAMES = [
+  "ゴールド",
+  "アイボリー",
+  "ネイビー",
+  "ローズ",
+  "ターコイズ",
+  "すみれ",
+  "オレンジ",
+  "ブルー",
+];
+
+function ColorSwatches({
+  colors,
+  names,
+  label,
+  value,
+  onChange,
+  className = "",
+}: {
+  colors: readonly number[];
+  names: readonly string[];
+  label: string;
+  value: number;
+  onChange: (color: number) => void;
+  className?: string;
+}) {
+  return (
+    <div className={`color-options ${className}`} role="group" aria-label={label}>
+      {colors.map((color, index) => (
+        <button
+          key={color}
+          type="button"
+          className={`color-option ${value === color ? "selected" : ""}`}
+          style={{ "--swatch": hex(color) } as CSSProperties}
+          title={names[index] ?? `カラー${index + 1}`}
+          aria-label={`${label}：${names[index] ?? `カラー${index + 1}`}`}
+          aria-pressed={value === color}
+          onClick={() => onChange(color)}
+        >
+          {value === color ? "✓" : ""}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AccentPicker({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (color: number) => void;
+}) {
+  return (
+    <div className="accent-picker">
+      <label className="appearance-label">
+        <span>{label}</span>
+        <input
+          type="color"
+          value={hex(value)}
+          onChange={(event) => onChange(Number.parseInt(event.target.value.slice(1), 16))}
+          aria-label={`${label}を自由に選ぶ`}
+        />
+      </label>
+      <ColorSwatches
+        colors={ACCENT_COLORS}
+        names={ACCENT_COLOR_NAMES}
+        label={label}
+        value={value}
+        onChange={onChange}
+        className="accent-swatches"
+      />
+    </div>
+  );
+}
+
+function WinPips({ wins, target = 3 }: { wins: number; target?: number }) {
+  return (
+    <span className="win-pips" role="img" aria-label={`${target}勝中${wins}勝`}>
+      {Array.from({ length: target }, (_, index) => (
+        <i key={index} className={index < wins ? "filled" : ""} />
+      ))}
+    </span>
+  );
+}
+
+function StageGlyph({ shape }: { shape: StageShape }) {
+  const paths: Record<StageShape, string> = {
+    square: "M10 10H54V54H10Z",
+    octagon: "M21 8H43L56 21V43L43 56H21L8 43V21Z",
+    cross: "M23 7H41V23H57V41H41V57H23V41H7V23H23Z",
+    rectangle: "M5 18H59V46H5Z",
+    ring: "M32 6a26 26 0 1 0 0 52 26 26 0 0 0 0-52Zm0 16a10 10 0 1 1 0 20 10 10 0 0 1 0-20Z",
+    diamond: "M32 5 59 32 32 59 5 32Z",
+  };
+  return (
+    <svg className="stage-glyph" viewBox="0 0 64 64" aria-hidden="true">
+      <path
+        d={paths[shape]}
+        fill="currentColor"
+        fillRule="evenodd"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function sortedStandings(state: GameState): Fighter[] {
+  return [...state.fighters].sort(
+    (a, b) => (state.series.wins[b.id] ?? 0) - (state.series.wins[a.id] ?? 0) || a.id - b.id,
+  );
+}
+
+function SeriesStandings({ state }: { state: GameState }) {
+  const ordered = sortedStandings(state);
+  const featured = ordered.slice(0, 3);
+  const player = ordered.find((fighter) => fighter.isPlayer);
+  if (player && !featured.includes(player)) featured.push(player);
+  const scoreRow = (fighter: Fighter, rank: number) => (
+    <div className={`standing-row ${fighter.isPlayer ? "is-you" : ""}`} key={fighter.id}>
+      <span className="standing-rank">{rank}</span>
+      <span className="standing-color" style={{ background: hex(fighter.color) }} />
+      <strong>{fighter.name}</strong>
+      <WinPips wins={state.series.wins[fighter.id] ?? 0} target={state.series.targetWins} />
+      <b>
+        {state.series.wins[fighter.id] ?? 0}
+        <small>勝</small>
+      </b>
+    </div>
+  );
+  return (
+    <div className="series-standings">
+      <div className="standings-heading">
+        <span className="eyebrow">SERIES SCORE</span>
+        <span>先に3勝で優勝</span>
+      </div>
+      <div>{featured.map((fighter) => scoreRow(fighter, ordered.indexOf(fighter) + 1))}</div>
+      <details className="all-standings">
+        <summary>
+          全員のスコアを見る <span>{ordered.length}体</span>
+        </summary>
+        <div className="all-standings-list">
+          {ordered.map((fighter, index) => scoreRow(fighter, index + 1))}
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function SeriesResult({
+  state,
+  onNextRound,
+  onRetry,
+  onHome,
+}: Pick<GameUIProps, "state" | "onNextRound" | "onRetry" | "onHome">) {
+  const champion = state.fighters.find((fighter) => fighter.id === state.series.championId);
+  const winner = state.fighters.find((fighter) => fighter.id === state.winnerId);
+  const player = state.fighters.find((fighter) => fighter.isPlayer);
+  const featured = champion ?? winner;
+  const next = getRoundPreview(state.options, state.series.round + 1);
+  const nextCue =
+    next.level > state.stage.level
+      ? next.modifier
+      : next.speedMultiplier > state.stage.speedMultiplier
+        ? "仕掛けが少し加速。予告を見て動こう"
+        : next.definition.subtitle;
+  return (
+    <Dialog
+      title={champion ? "シリーズ結果" : "ラウンド結果"}
+      className={`series-result ${champion?.isPlayer ? "you-win" : ""}`}
+    >
+      <div className="series-result-heading">
+        <span className="eyebrow">
+          {champion ? "SERIES CHAMPION" : `ROUND ${state.series.round} RESULT`}
+        </span>
+        {champion && (
+          <span className="series-trophy">
+            <Icon name="trophy" size={25} />
+          </span>
+        )}
+      </div>
+      <div className="series-winner">
+        <Mascot
+          color={featured?.color ?? player?.color ?? DEFAULT_OPTIONS.playerColor}
+          appearance={featured?.appearance ?? player?.appearance}
+        />
+        <div>
+          <h2>
+            {champion
+              ? champion.isPlayer
+                ? "シリーズ優勝！"
+                : `${champion.name} が優勝！`
+              : winner
+                ? winner.isPlayer
+                  ? "ラウンド勝利！"
+                  : `${winner.name} が1勝！`
+                : "この勝負は引き分け"}
+          </h2>
+          <p>
+            {champion
+              ? "先に3勝。そのしっぽがチャンピオン！"
+              : winner
+                ? `ROUND ${state.series.round} · ${getStageDefinition(state.stage.id).name}`
+                : "勝利数はそのまま、次のラウンドへ。"}
+          </p>
+          {featured && (
+            <div className="winner-score">
+              <strong>{featured.name}</strong>
+              <WinPips wins={state.series.wins[featured.id] ?? 0} />
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="round-personal-stats" aria-label="このラウンドのあなたの成績">
+        <div>
+          <span>YOU の順位</span>
+          <strong>
+            {player?.placement || "—"}
+            <small> / {state.options.playerCount}</small>
+          </strong>
+        </div>
+        <div>
+          <span>撃墜</span>
+          <strong>{player?.kills ?? 0}</strong>
+        </div>
+        <div>
+          <span>ダメージ</span>
+          <strong>
+            {Math.round(player?.damageDealt ?? 0)}
+            <small>%</small>
+          </strong>
+        </div>
+        <div>
+          <span>打ち返し</span>
+          <strong>{player?.reflections ?? 0}</strong>
+        </div>
+      </div>
+      <SeriesStandings state={state} />
+      {!champion && (
+        <div
+          className="next-round-preview"
+          style={{ "--stage-color": hex(next.definition.color) } as CSSProperties}
+        >
+          <StageGlyph shape={next.definition.shape} />
+          <div>
+            <span className="eyebrow">
+              NEXT · ROUND {state.series.round + 1} · LEVEL {next.level}
+            </span>
+            <strong>{next.definition.name}</strong>
+            <p>{nextCue}</p>
+          </div>
+        </div>
+      )}
+      <button
+        type="button"
+        className="button button-primary w-full"
+        onClick={champion ? onRetry : onNextRound}
+      >
+        {champion ? "新しいシリーズ" : "次のラウンドへ"}
+        <Icon name={champion ? "retry" : "arrow"} />
+      </button>
+      <div className="series-result-actions">
+        {!champion && (
+          <button type="button" className="text-button" onClick={onRetry}>
+            シリーズをやり直す
+          </button>
+        )}
+        <button type="button" className="text-button" onClick={onHome}>
+          ロビーに戻る
+        </button>
+      </div>
+    </Dialog>
+  );
+}
+
+const stageHints: Record<GameState["stage"]["id"], string> = {
+  sky: "回転棒をジャンプで避けよう",
+  twin: "逆向きに回る2本の棒。タイミングを見よう",
+  hammers: "ハンマーが通り過ぎた隙に移動しよう",
+  conveyor: "黄色く光ると、コンベアが逆向きに",
+  holes: "中央の穴と、光り始めた開閉床に注意",
+  meteors: "赤い円から離れ、衝撃波をジャンプ",
+  safezone: "次の円へ先回り。円の外に4秒いると脱落",
+  chaos: "足元と空に注意。予告を見て動こう",
+};
+
 export function GameUI(props: GameUIProps) {
   const {
     state,
@@ -494,6 +910,8 @@ export function GameUI(props: GameUIProps) {
     error,
     muted,
     onStart,
+    onNextRound,
+    onPreview,
     onTogglePause,
     onHome,
     onRetry,
@@ -510,6 +928,36 @@ export function GameUI(props: GameUIProps) {
   const winner = state.fighters.find((fighter) => fighter.id === state.winnerId);
   const lobby = state.phase === "lobby";
   const active = state.phase === "playing" || state.phase === "countdown";
+  const isSeries = state.options.mode === "first-to-three";
+  const definition = getStageDefinition(state.stage.id);
+  const preview = getRoundPreview(options, 1);
+  const leader = sortedStandings(state)[0];
+  const updateOptions = (changes: Partial<GameOptions>) => {
+    const next = { ...options, ...changes };
+    setOptions(next);
+    onPreview(next);
+  };
+  const updateAppearance = (changes: Partial<FighterAppearance>) =>
+    updateOptions({ playerAppearance: { ...options.playerAppearance, ...changes } });
+  const zone = state.safeZone;
+  const outsideZone = Boolean(zone && player?.alive && player.outsideZoneTime > 0);
+  const outsideRemaining = zone
+    ? Math.max(0, zone.outsideLimit - (player?.outsideZoneTime ?? 0))
+    : 0;
+  const arenaWarning = zone ? zone.phase !== "holding" : state.warning;
+  const arenaStatus = zone
+    ? `${zone.phase === "holding" ? "次の安全地帯まで" : zone.phase === "warning" ? "安全地帯の移動予告" : "安全地帯が移動中"} · ${Math.max(0, Math.ceil(zone.timer))}秒`
+    : state.warning
+      ? `外周が崩れる！ あと ${Math.max(0, Math.ceil(state.nextCollapse))} 秒`
+      : `次の崩落まで ${Math.max(0, Math.ceil(state.nextCollapse))} 秒`;
+  const meteorWarnings = state.meteors.filter((meteor) => meteor.phase === "warning");
+  const hazardCue = meteorWarnings.length
+    ? "隕石接近！ 赤い円から離れ、衝撃波はジャンプ"
+    : state.tiles.some((tile) => tile.conveyor?.reversing)
+      ? "黄色いベルトが、まもなく逆向きに"
+      : state.tiles.some((tile) => tile.trap?.phase === "warning")
+        ? "光る床がまもなく開く！ 足元を確認"
+        : null;
   const openHelp = () => {
     resumeAfterHelp.current = state.phase === "playing" || state.phase === "countdown";
     if (resumeAfterHelp.current) onTogglePause();
@@ -522,11 +970,12 @@ export function GameUI(props: GameUIProps) {
   };
   const damage = Math.round(player?.damage ?? 0);
   const stamina = Math.max(0, Math.min(MAX_STAMINA, player?.stamina ?? MAX_STAMINA));
-  const collapseIn = Math.max(0, Math.ceil(state.nextCollapse));
   const damageColor = damage >= 100 ? "#f35c75" : damage >= 60 ? "#e99438" : "#253e48";
 
   return (
-    <div className={`game-ui ${lobby ? "is-lobby" : "is-match"}`}>
+    <div
+      className={`game-ui ${lobby ? "is-lobby" : "is-match"} ${isSeries ? "is-series" : "is-single"}`}
+    >
       <header className="game-header">
         <div className="brand-lockup">
           <span className="brand-symbol">
@@ -593,7 +1042,11 @@ export function GameUI(props: GameUIProps) {
                 <br />
                 <span>SPIN!</span>
               </h1>
-              <Mascot color={options.playerColor} className="lobby-mascot" />
+              <Mascot
+                color={options.playerColor}
+                appearance={options.playerAppearance}
+                className="lobby-mascot"
+              />
             </div>
             <h2>しっぽで、最後のひとりに。</h2>
             <p className="lobby-description">
@@ -601,79 +1054,184 @@ export function GameUI(props: GameUIProps) {
               <br />
               空のアリーナで、しっぽだらけの大乱闘。
             </p>
-            <div className="lobby-rule">
-              <Icon name="tail" size={25} />
-              <span>
-                <strong>しっぽでスターを打ち返そう。</strong>
-                <br />
-                ％がたまるほど、遠くに吹っ飛ぶ！
-              </span>
+            <div className="lobby-mode" role="group" aria-label="対戦モード">
+              <button
+                type="button"
+                aria-pressed={options.mode === "first-to-three"}
+                className={options.mode === "first-to-three" ? "selected" : ""}
+                onClick={() => updateOptions({ mode: "first-to-three" })}
+              >
+                <Icon name="trophy" size={17} />
+                <strong>3勝先取</strong>
+                <span>ラウンドを重ねて優勝へ</span>
+              </button>
+              <button
+                type="button"
+                aria-pressed={options.mode === "single"}
+                className={options.mode === "single" ? "selected" : ""}
+                onClick={() => updateOptions({ mode: "single" })}
+              >
+                <Icon name="hit" size={17} />
+                <strong>1戦勝負</strong>
+                <span>気軽にワンバトル</span>
+              </button>
             </div>
-            <div className="lobby-options">
-              <div className="option-row">
-                <span className="option-label">あなたのカラー</span>
-                <div className="color-options" role="group" aria-label="キャラクターの色">
-                  {COLORS.slice(0, 6).map((color, index) => (
-                    <button
-                      key={color}
-                      type="button"
-                      className={`color-option ${options.playerColor === color ? "selected" : ""}`}
-                      style={{ "--swatch": hex(color) } as CSSProperties}
-                      aria-label={`カラー ${index + 1}`}
-                      aria-pressed={options.playerColor === color}
-                      onClick={() => setOptions((old) => ({ ...old, playerColor: color }))}
-                    >
-                      {options.playerColor === color ? "✓" : ""}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="option-row">
-                <span className="option-label">
-                  対戦人数<span>あなた＋CPU</span>
+            <div className="stage-selection">
+              <label className="option-label" htmlFor="stage-select">
+                ステージ
+              </label>
+              <select
+                id="stage-select"
+                value={options.stage}
+                onChange={(event) => updateOptions({ stage: event.target.value as StageSelection })}
+              >
+                <option value="shuffle">
+                  {options.mode === "first-to-three"
+                    ? `ステージツアー · ${STAGES.length}種類`
+                    : `ランダム · ${STAGES.length}種類`}
+                </option>
+                {STAGES.map((stage) => (
+                  <option key={stage.id} value={stage.id}>
+                    {stage.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div
+              className="lobby-stage-preview"
+              style={{ "--stage-color": hex(preview.definition.color) } as CSSProperties}
+            >
+              <StageGlyph shape={preview.definition.shape} />
+              <div>
+                <span>
+                  {preview.definition.shapeLabel} · {preview.definition.hazards.join(" / ")}
                 </span>
-                <div className="segmented-control" role="group" aria-label="対戦人数">
-                  {([8, 16, 24] as const).map((count) => (
-                    <button
-                      key={count}
-                      type="button"
-                      aria-pressed={options.playerCount === count}
-                      className={options.playerCount === count ? "selected" : ""}
-                      onClick={() => setOptions((old) => ({ ...old, playerCount: count }))}
-                    >
-                      {count}
-                      <span>体</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="option-row">
-                <span className="option-label">CPUの強さ</span>
-                <div
-                  className="segmented-control difficulty-control"
-                  role="group"
-                  aria-label="CPUの強さ"
-                >
-                  {(
-                    [
-                      ["easy", "やさしい"],
-                      ["normal", "ふつう"],
-                      ["hard", "つよい"],
-                    ] as [Difficulty, string][]
-                  ).map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      aria-pressed={options.difficulty === value}
-                      className={options.difficulty === value ? "selected" : ""}
-                      onClick={() => setOptions((old) => ({ ...old, difficulty: value }))}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                <p>
+                  {options.stage === "shuffle"
+                    ? options.mode === "first-to-three"
+                      ? `${STAGES.length}つのステージを巡り、後半は仕掛けが追加。先に3勝で優勝！`
+                      : `${STAGES.length}種類のアリーナからランダムに選ばれます。`
+                    : preview.definition.description}
+                </p>
               </div>
             </div>
+            <details className="lobby-advanced">
+              <summary>
+                <span>見た目・人数・CPU設定</span>
+                <span className="settings-summary">
+                  <i style={{ background: hex(options.playerColor) }} />
+                  {options.playerCount}体 ·{" "}
+                  {options.difficulty === "easy"
+                    ? "やさしい"
+                    : options.difficulty === "hard"
+                      ? "つよい"
+                      : "ふつう"}
+                  <b>＋</b>
+                </span>
+              </summary>
+              <div className="lobby-options">
+                <div className="appearance-editor">
+                  <div className="body-picker">
+                    <span className="appearance-label">
+                      ボディの色 <small>{COLORS.length} COLORS</small>
+                    </span>
+                    <ColorSwatches
+                      colors={COLORS}
+                      names={BODY_COLOR_NAMES}
+                      label="ボディの色"
+                      value={options.playerColor}
+                      onChange={(color) => updateOptions({ playerColor: color })}
+                      className="body-swatches"
+                    />
+                  </div>
+                  <div className="appearance-parts">
+                    <AccentPicker
+                      label="しっぽの先"
+                      value={options.playerAppearance.tailTipColor}
+                      onChange={(color) => updateAppearance({ tailTipColor: color })}
+                    />
+                    <AccentPicker
+                      label="足の色"
+                      value={options.playerAppearance.shoeColor}
+                      onChange={(color) => updateAppearance({ shoeColor: color })}
+                    />
+                  </div>
+                  <div className="option-row accessory-row">
+                    <label className="option-label" htmlFor="accessory-select">
+                      アクセサリー
+                    </label>
+                    <select
+                      id="accessory-select"
+                      value={options.playerAppearance.accessory}
+                      onChange={(event) =>
+                        updateAppearance({ accessory: event.target.value as Accessory })
+                      }
+                    >
+                      {ACCESSORIES.map((accessory) => (
+                        <option key={accessory.id} value={accessory.id}>
+                          {accessory.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {options.playerAppearance.accessory !== "none" && (
+                    <AccentPicker
+                      label="アクセサリーの色"
+                      value={options.playerAppearance.accessoryColor}
+                      onChange={(color) => updateAppearance({ accessoryColor: color })}
+                    />
+                  )}
+                  <p className="appearance-note">
+                    見た目はシリーズを通して同じ。自分のしっぽを見つけよう。
+                  </p>
+                </div>
+                <div className="option-row">
+                  <span className="option-label">
+                    対戦人数<span>あなた＋CPU</span>
+                  </span>
+                  <div className="segmented-control" role="group" aria-label="対戦人数">
+                    {([8, 16, 24] as const).map((count) => (
+                      <button
+                        key={count}
+                        type="button"
+                        aria-pressed={options.playerCount === count}
+                        className={options.playerCount === count ? "selected" : ""}
+                        onClick={() => updateOptions({ playerCount: count })}
+                      >
+                        {count}
+                        <span>体</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="option-row">
+                  <span className="option-label">CPUの強さ</span>
+                  <div
+                    className="segmented-control difficulty-control"
+                    role="group"
+                    aria-label="CPUの強さ"
+                  >
+                    {(
+                      [
+                        ["easy", "やさしい"],
+                        ["normal", "ふつう"],
+                        ["hard", "つよい"],
+                      ] as [Difficulty, string][]
+                    ).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={options.difficulty === value}
+                        className={options.difficulty === value ? "selected" : ""}
+                        onClick={() => updateOptions({ difficulty: value })}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </details>
             <button
               type="button"
               className="button button-primary start-button"
@@ -684,15 +1242,26 @@ export function GameUI(props: GameUIProps) {
               {ready ? <Icon name="arrow" size={23} /> : <span className="loading-spinner" />}
             </button>
             <p className="lobby-footnote">
-              1 PLAYER + {options.playerCount - 1} CPU<span>最後に残った1体が勝ち</span>
+              1 PLAYER + {options.playerCount - 1} CPU
+              <span>
+                {options.mode === "first-to-three"
+                  ? "先に3ラウンド勝てば優勝"
+                  : "最後に残った1体が勝ち"}
+              </span>
             </p>
           </section>
           <div className="arena-caption">
-            <span className="arena-number">01</span>
+            <span className="arena-number">
+              {String(STAGES.findIndex((stage) => stage.id === preview.id) + 1).padStart(2, "0")}
+            </span>
             <div>
-              <span className="eyebrow">FLOATING PLAYGROUND</span>
-              <strong>スカイ・スピナー</strong>
-              <span>回る棒、崩れる床。逃げ場はだんだん狭くなる。</span>
+              <span className="eyebrow">
+                {options.stage === "shuffle"
+                  ? `STAGE TOUR · ${STAGES.length} ARENAS`
+                  : preview.definition.shapeLabel}
+              </span>
+              <strong>{preview.definition.name}</strong>
+              <span>{preview.definition.subtitle}</span>
             </div>
           </div>
           <div className="lobby-bottom">
@@ -710,19 +1279,65 @@ export function GameUI(props: GameUIProps) {
         <>
           {state.phase !== "finished" && (
             <div
-              className={`collapse-status ${state.warning ? "is-warning" : ""}`}
-              aria-live={state.warning ? "polite" : "off"}
+              className={`collapse-status ${arenaWarning ? "is-warning" : ""} ${zone ? "zone-status" : ""}`}
+              aria-live={arenaWarning ? "polite" : "off"}
             >
               <span className="status-dot" />
-              {state.warning
-                ? `外周が崩れる！ あと ${collapseIn} 秒`
-                : `次の崩落まで ${collapseIn} 秒`}
-              {state.warning && <Icon name="jump" size={16} />}
+              {arenaStatus}
+              {arenaWarning && <Icon name="jump" size={16} />}
+            </div>
+          )}
+          {state.phase !== "finished" && (
+            <div className="round-stage-status">
+              <div className="round-stage-heading">
+                <b>{isSeries ? `ROUND ${state.series.round}` : "SINGLE BATTLE"}</b>
+                <span>{definition.name}</span>
+                <small className={`stage-level level-${state.stage.level}`}>
+                  LV.{state.stage.level}
+                </small>
+              </div>
+              {isSeries && (
+                <div className="series-score-strip">
+                  <span className="your-series-score">
+                    <b>YOU</b>
+                    <WinPips wins={state.series.wins[player?.id ?? 0] ?? 0} />
+                  </span>
+                  {leader && !leader.isPlayer ? (
+                    <span>
+                      <b>{leader.name}</b>
+                      <WinPips wins={state.series.wins[leader.id] ?? 0} />
+                    </span>
+                  ) : (
+                    <small>先に3勝で優勝</small>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {state.phase === "playing" && outsideZone && (
+            <div
+              className="hazard-notice zone-danger"
+              role="alert"
+              aria-label="安全地帯の外です。急いで円の中に戻ってください。"
+            >
+              <Icon name="arrow" size={17} />
+              <span aria-hidden="true">
+                安全地帯へ！ <strong>残り {outsideRemaining.toFixed(1)}秒</strong>
+              </span>
+            </div>
+          )}
+          {state.phase === "playing" && hazardCue && !outsideZone && (
+            <div className="hazard-notice" role="status">
+              <Icon name={meteorWarnings.length ? "star" : "jump"} size={15} />
+              {hazardCue}
             </div>
           )}
           <div className={`player-card panel ${!player?.alive ? "player-out" : ""}`}>
             <div className="player-identity">
-              <Mascot color={player?.color ?? DEFAULT_OPTIONS.playerColor} />
+              <Mascot
+                color={player?.color ?? DEFAULT_OPTIONS.playerColor}
+                appearance={player?.appearance}
+              />
               <span>YOU</span>
             </div>
             <div className="player-readout">
@@ -796,11 +1411,18 @@ export function GameUI(props: GameUIProps) {
           )}
           {state.phase === "countdown" && (
             <div className="countdown-overlay" role="status">
-              <span className="eyebrow">READY TO RUMBLE?</span>
+              <span className="eyebrow">
+                {isSeries ? `ROUND ${state.series.round}` : "READY TO RUMBLE?"} · LEVEL{" "}
+                {state.stage.level}
+              </span>
+              <h2 className="countdown-stage-name">{definition.name}</h2>
               <strong key={Math.ceil(state.countdown)}>
                 {Math.max(1, Math.ceil(state.countdown))}
               </strong>
-              <p>回転棒をジャンプで避けよう</p>
+              <p>{stageHints[state.stage.id]}</p>
+              {state.stage.level > 1 && (
+                <span className="countdown-modifier">{state.stage.modifier}</span>
+              )}
             </div>
           )}
           {state.phase === "playing" && state.elapsed < 0.8 && (
@@ -820,10 +1442,12 @@ export function GameUI(props: GameUIProps) {
             <div className="spectator-card panel" role="status">
               <span className="eyebrow">SPECTATING</span>
               <strong>{player.placement || "—"}位でフィニッシュ</strong>
-              <p>残った仲間のバトルを観戦中</p>
+              <p>
+                {isSeries ? "ラウンド終了まで、残った仲間を観戦中" : "残った仲間のバトルを観戦中"}
+              </p>
               <button type="button" className="button button-small" onClick={onRetry}>
                 <Icon name="retry" size={16} />
-                もう一度
+                {isSeries ? "シリーズをやり直す" : "もう一度"}
               </button>
             </div>
           )}
@@ -844,7 +1468,7 @@ export function GameUI(props: GameUIProps) {
           <div className="dialog-actions">
             <button type="button" className="button button-secondary" onClick={onRetry}>
               <Icon name="retry" size={18} />
-              やり直す
+              {isSeries ? "シリーズ最初から" : "やり直す"}
             </button>
             <button type="button" className="button button-secondary" onClick={onHome}>
               <Icon name="home" size={18} />
@@ -854,7 +1478,11 @@ export function GameUI(props: GameUIProps) {
         </Dialog>
       )}
 
-      {state.phase === "finished" && !help && !error && (
+      {state.phase === "finished" && isSeries && !help && !error && (
+        <SeriesResult state={state} onNextRound={onNextRound} onRetry={onRetry} onHome={onHome} />
+      )}
+
+      {state.phase === "finished" && !isSeries && !help && !error && (
         <Dialog title="バトル結果" className={`result-dialog ${winner?.isPlayer ? "you-win" : ""}`}>
           <div className="result-medallion">
             <Icon name="trophy" size={40} />
@@ -871,7 +1499,10 @@ export function GameUI(props: GameUIProps) {
             {winner?.isPlayer ? "そのしっぽ、ただものじゃない。" : "もうひと勝負、しっぽを振ろう。"}
           </p>
           <div className="result-character">
-            <Mascot color={winner?.color ?? player?.color ?? DEFAULT_OPTIONS.playerColor} />
+            <Mascot
+              color={winner?.color ?? player?.color ?? DEFAULT_OPTIONS.playerColor}
+              appearance={winner?.appearance ?? player?.appearance}
+            />
             <span>{winner?.isPlayer ? "YOU" : (winner?.name ?? "DRAW")}</span>
           </div>
           <div className="result-placement">

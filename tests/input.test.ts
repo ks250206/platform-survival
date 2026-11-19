@@ -48,7 +48,9 @@ describe("input boundaries", () => {
   });
 
   it("preserves native Space activation on buttons while allowing movement after resume", () => {
-    const button = { closest: (selector: string) => (selector === "button, a" ? {} : null) };
+    const button = {
+      closest: (selector: string) => (selector === "button, a, summary" ? {} : null),
+    };
     expect(key("Space", button).preventDefault).not.toHaveBeenCalled();
     expect(input.sample().jump).toBe(false);
     key("KeyW", button);

@@ -49,7 +49,8 @@ export class GameInput {
       el?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')
     )
       return;
-    if ((event.code === "Space" || event.code === "Enter") && el?.closest("button, a")) return;
+    if ((event.code === "Space" || event.code === "Enter") && el?.closest("button, a, summary"))
+      return;
     if (movement.has(event.code) || bindings[event.code]) event.preventDefault();
     this.keys.add(event.code);
     if (event.repeat) return;

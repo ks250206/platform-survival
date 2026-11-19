@@ -3,7 +3,6 @@ import {
   DEFAULT_OPTIONS,
   EMPTY_INPUT,
   FIGHTER_RADIUS,
-  GRID_RADIUS,
   MAX_STAMINA,
   TILE_SIZE,
 } from "./types";
@@ -16,8 +15,12 @@ import type {
   GameState,
   InputFrame,
   Phase,
+  SeriesState,
   Tile,
 } from "./types";
+import { createStagePlan } from "./stages";
+import { appearanceForFighter } from "./appearance";
+import { safeZoneNavigationTarget, updateSafeZone } from "./safe-zone";
 import {
   ATTACKS,
   attackIsActive,
@@ -32,9 +35,6 @@ import {
 const GRAVITY = 21;
 const WALK_SPEED = 4.5;
 const JUMP_SPEED = 8.2;
-const FIRST_COLLAPSE = 30;
-const COLLAPSE_INTERVAL = 25;
-const COLLAPSE_WARNING = 5;
 const HUB_RADIUS = 0.67;
 const TWO_PI = Math.PI * 2;
 const BOT_NAMES = ["POPPY", "LUNA", "PEACH", "SKY", "LEMON", "EMBER", "SPROUT"];
@@ -56,6 +56,14 @@ export class GameEngine implements GameController {
   private cannonSide = 0;
   private reflectedAttacks = new Map<number, Set<number>>();
   private springCooldown = new Map<number, number>();
+  private tilesById = new Map<number, Tile>();
+  private meteorTimer = Infinity;
+  private meteorId = 1;
+  private topologyVersion = 0;
+  private navigation = new Map<
+    number,
+    { start: number; goal: number; version: number; expires: number; next: number; jump: boolean }
+  >();
 
   constructor(options: Partial<GameOptions> = {}) {
     this.state = this.createState({ ...DEFAULT_OPTIONS, ...options });
@@ -66,35 +74,19 @@ export class GameEngine implements GameController {
     return this.rng / 0x100000000;
   }
 
-  private createState(options: GameOptions): GameState {
-    this.rng = options.seed >>> 0;
-    const tiles: Tile[] = [];
-    for (let row = -GRID_RADIUS; row <= GRID_RADIUS; row++) {
-      for (let col = -GRID_RADIUS; col <= GRID_RADIUS; col++) {
-        tiles.push({
-          id: tiles.length,
-          col,
-          row,
-          x: col * TILE_SIZE,
-          z: row * TILE_SIZE,
-          ring: Math.max(Math.abs(col), Math.abs(row)),
-          state: "solid",
-          fallTime: 0,
-          kind: (col === -2 && row === 0) || (col === 2 && row === 0) ? "spring" : "normal",
-        });
-      }
-    }
+  private createState(options: GameOptions, series?: SeriesState): GameState {
+    const round = series?.round ?? 1;
+    this.rng = (options.seed ^ Math.imul(round, 0x45d9f3b)) >>> 0;
+    const plan = createStagePlan(options, round);
+    this.tilesById = new Map(plan.tiles.map((tile) => [tile.id, tile]));
+    this.meteorTimer = plan.stage.meteor?.interval ?? Infinity;
+    this.cannonTimer = Math.min(4, plan.stage.projectileInterval);
     const fighters: Fighter[] = [];
     const botColors = COLORS.filter((color) => color !== options.playerColor);
     for (let id = 0; id < options.playerCount; id++) {
-      const outerCount = options.playerCount > 16 ? 16 : options.playerCount;
-      const outer = id < outerCount;
-      const ringCount = outer ? outerCount : options.playerCount - outerCount;
-      const ringIndex = outer ? id : id - outerCount;
-      const angle = (ringIndex * TWO_PI) / ringCount + Math.PI / 4 + (outer ? 0 : Math.PI / 8);
-      const spawnRadius = options.playerCount > 16 ? (outer ? 7.5 : 4.4) : 6.4;
-      const x = Math.sin(angle) * spawnRadius;
-      const z = Math.cos(angle) * spawnRadius;
+      const spawn = plan.spawns[id]!;
+      const x = spawn.x;
+      const z = spawn.z;
       fighters.push({
         id,
         name:
@@ -102,6 +94,8 @@ export class GameEngine implements GameController {
             ? "YOU"
             : `${BOT_NAMES[(id - 1) % BOT_NAMES.length]}${id > BOT_NAMES.length ? ` ${Math.ceil(id / BOT_NAMES.length)}` : ""}`,
         color: id === 0 ? options.playerColor : botColors[(id - 1) % botColors.length],
+        appearance: appearanceForFighter(id, options),
+        outsideZoneTime: 0,
         isPlayer: id === 0,
         x,
         y: 0,
@@ -132,53 +126,76 @@ export class GameEngine implements GameController {
         aiStrafe: this.random() < 0.5 ? -1 : 1,
       });
     }
-    // Give the human a readable opening in a 24-fighter crowd. Everyone keeps
-    // the same combat rules; swap with one inner spawn instead of adding a slot.
-    if (fighters.length > 16) {
-      const player = fighters[0];
-      const inner = fighters[16];
-      const opening = { x: player.x, z: player.z, facing: player.facing };
-      Object.assign(player, { x: inner.x, z: inner.z, facing: inner.facing });
-      Object.assign(inner, opening);
-    }
+    const firstBar = plan.spinners[0];
     return {
       phase: "lobby",
       options,
+      series: series ?? {
+        round: 1,
+        targetWins: options.mode === "first-to-three" ? 3 : 1,
+        wins: Array.from({ length: options.playerCount }, () => 0),
+        championId: null,
+        history: [],
+      },
+      stage: plan.stage,
+      safeZone: plan.safeZone,
       elapsed: 0,
       countdown: 3,
       fighters,
-      tiles,
+      tiles: plan.tiles,
       projectiles: [],
-      pickups: [
-        { id: 0, x: 0, y: 0.65, z: -3.6, active: true, respawn: 0 },
-        { id: 1, x: 0, y: 0.65, z: 3.6, active: true, respawn: 0 },
-      ],
-      bumpers: [
-        { id: 0, x: -3.6, z: -3.6, radius: 0.6, pulse: 0 },
-        { id: 1, x: 3.6, z: 3.6, radius: 0.6, pulse: 0 },
-      ],
+      pickups: plan.pickups,
+      bumpers: plan.bumpers,
+      spinners: plan.spinners,
+      hammers: plan.hammers,
+      meteors: [],
       events: [],
-      spinnerAngle: 0.3,
-      spinnerSpeed: 0.72,
-      spinnerRadius: 6.8,
-      safeRing: GRID_RADIUS,
-      nextCollapse: FIRST_COLLAPSE,
+      spinnerAngle: firstBar?.angle ?? 0,
+      spinnerSpeed: firstBar?.speed ?? 0,
+      spinnerRadius: firstBar?.radius ?? 0,
+      safeRing: plan.stage.gridRadius,
+      nextCollapse: plan.stage.firstCollapse,
       warning: false,
       winnerId: null,
       shake: 0,
     };
   }
 
+  private clearRoundCaches(): void {
+    this.previousInput = { ...EMPTY_INPUT };
+    this.cannonSide = 0;
+    this.reflectedAttacks.clear();
+    this.springCooldown.clear();
+    this.navigation.clear();
+    this.topologyVersion++;
+  }
+
   reset(options: Partial<GameOptions> = {}): void {
     this.eventId = 1;
     this.projectileId = 1;
+    this.meteorId = 1;
     this.attackSequence = 1;
-    this.cannonTimer = 4;
-    this.cannonSide = 0;
-    this.previousInput = { ...EMPTY_INPUT };
-    this.reflectedAttacks.clear();
-    this.springCooldown.clear();
+    this.clearRoundCaches();
     this.state = this.createState({ ...this.state.options, ...options });
+  }
+
+  nextRound(): void {
+    const previous = this.state;
+    if (
+      previous.phase !== "finished" ||
+      previous.options.mode !== "first-to-three" ||
+      previous.series.championId !== null
+    )
+      return;
+    const series: SeriesState = {
+      ...previous.series,
+      round: previous.series.round + 1,
+      wins: [...previous.series.wins],
+      history: [...previous.series.history],
+    };
+    this.clearRoundCaches();
+    this.state = this.createState(previous.options, series);
+    this.state.phase = "countdown";
   }
 
   start(options: Partial<GameOptions> = {}): void {
@@ -219,7 +236,7 @@ export class GameEngine implements GameController {
     state.events = state.events.filter((event) => event.age < 1.3);
     state.shake = Math.max(0, state.shake - dt * 3);
     if (state.phase === "lobby") {
-      state.spinnerAngle = (state.spinnerAngle + dt * 0.2) % TWO_PI;
+      // Lobby is a static, readable preview; no hazard clocks advance.
       return;
     }
     if (state.phase === "finished") return;
@@ -233,9 +250,7 @@ export class GameEngine implements GameController {
     }
     state.elapsed += dt;
     this.updateArena(dt);
-    state.spinnerSpeed = 0.72 + Math.min(0.55, state.elapsed * 0.0045);
-    state.spinnerAngle = (state.spinnerAngle + state.spinnerSpeed * dt) % TWO_PI;
-    state.spinnerRadius = Math.min(6.8, Math.max(1.0, (state.safeRing + 0.2) * TILE_SIZE));
+    this.updateStageHazards(dt);
     for (const bumper of state.bumpers) bumper.pulse = Math.max(0, bumper.pulse - dt * 2.5);
     for (const [id, seconds] of this.springCooldown)
       this.springCooldown.set(id, Math.max(0, seconds - dt));
@@ -252,8 +267,16 @@ export class GameEngine implements GameController {
     }
     this.updatePickups(dt);
     this.updateProjectiles(dt);
+    this.updateMeteors(dt);
+    const outside = new Set(updateSafeZone(state, dt));
     for (const fighter of state.fighters) {
-      if (fighter.alive && (fighter.y < -7 || Math.abs(fighter.x) > 30 || Math.abs(fighter.z) > 30))
+      if (
+        fighter.alive &&
+        (fighter.y < -7 ||
+          Math.abs(fighter.x) > 35 ||
+          Math.abs(fighter.z) > 35 ||
+          outside.has(fighter.id))
+      )
         this.eliminate(fighter);
     }
     this.checkWinner();
@@ -273,21 +296,29 @@ export class GameEngine implements GameController {
 
   private updateArena(dt: number): void {
     const state = this.state;
+    const { firstCollapse, collapseInterval, collapseWarning } = state.stage;
+    if (state.stage.groundMode === "safe-zone") {
+      state.safeRing = state.stage.gridRadius;
+      state.warning = false;
+      state.nextCollapse = 0;
+      return;
+    }
     const fallenRings =
-      state.elapsed < FIRST_COLLAPSE
+      state.elapsed < firstCollapse
         ? 0
-        : 1 + Math.floor((state.elapsed - FIRST_COLLAPSE) / COLLAPSE_INTERVAL);
-    const safeRing = Math.max(-1, GRID_RADIUS - fallenRings);
+        : 1 + Math.floor((state.elapsed - firstCollapse) / collapseInterval);
+    const safeRing = Math.max(-1, state.stage.gridRadius - fallenRings);
     if (safeRing < state.safeRing) {
       state.safeRing = safeRing;
+      this.topologyVersion++;
       this.emit("collapse", 0, 0, 0, 0xff896b);
       state.shake = 0.5;
     }
     state.nextCollapse =
       safeRing < 0
         ? 0
-        : Math.max(0, FIRST_COLLAPSE + fallenRings * COLLAPSE_INTERVAL - state.elapsed);
-    state.warning = safeRing >= 0 && state.nextCollapse <= COLLAPSE_WARNING;
+        : Math.max(0, firstCollapse + fallenRings * collapseInterval - state.elapsed);
+    state.warning = safeRing >= 0 && state.nextCollapse <= collapseWarning;
     for (const tile of state.tiles) {
       if (tile.ring > safeRing && (tile.state === "solid" || tile.state === "warning")) {
         tile.state = "falling";
@@ -297,18 +328,92 @@ export class GameEngine implements GameController {
         tile.fallTime += dt;
         if (tile.fallTime > 1.4) tile.state = "gone";
       } else if (tile.state !== "gone") {
-        tile.state = state.warning && tile.ring === safeRing ? "warning" : "solid";
+        const nextState = state.warning && tile.ring === safeRing ? "warning" : "solid";
+        if (tile.state !== nextState) this.topologyVersion++;
+        tile.state = nextState;
+      }
+      if (tile.trap && tile.state !== "gone" && tile.state !== "falling") {
+        const trap = tile.trap;
+        const previous = trap.phase;
+        const start = 8 + (trap.group * state.stage.trapCycle) / 3;
+        const elapsed = state.elapsed - start;
+        const phaseTime =
+          ((elapsed % state.stage.trapCycle) + state.stage.trapCycle) % state.stage.trapCycle;
+        const warn = state.stage.trapWarningDuration;
+        const open = state.stage.trapOpenDuration;
+        if (elapsed < 0) {
+          trap.phase = "closed";
+          trap.remaining = -elapsed;
+          trap.openness = 0;
+        } else if (phaseTime < warn) {
+          trap.phase = "warning";
+          trap.remaining = warn - phaseTime;
+          trap.openness = 0;
+        } else if (phaseTime < warn + open) {
+          const openAge = phaseTime - warn;
+          trap.phase = "open";
+          trap.remaining = open - openAge;
+          trap.openness = Math.min(1, openAge / 0.18, (open - openAge) / 0.22);
+        } else {
+          trap.phase = "closed";
+          trap.remaining = state.stage.trapCycle - phaseTime;
+          trap.openness = 0;
+        }
+        if (trap.phase !== previous) this.topologyVersion++;
+      }
+      if (tile.conveyor) {
+        const period = state.stage.conveyorPeriod;
+        const sign = Math.floor(state.elapsed / period) % 2 ? -1 : 1;
+        tile.conveyor.x = tile.conveyor.baseX * sign;
+        tile.conveyor.z = tile.conveyor.baseZ * sign;
+        tile.conveyor.reversing = period - (state.elapsed % period) <= 1.6;
       }
     }
   }
 
-  /** Exact tile support also handles holes and staged collapse, not just bounds. */
+  private cellId(col: number, row: number): number {
+    const radius = this.state.stage.gridRadius;
+    if (Math.abs(col) > radius || Math.abs(row) > radius) return -1;
+    return (row + radius) * (radius * 2 + 1) + col + radius;
+  }
+
+  /** Sparse footprints and temporarily open traps participate in real collision. */
   tileAt(x: number, z: number): Tile | undefined {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return undefined;
     const col = Math.floor(x / TILE_SIZE + 0.5);
     const row = Math.floor(z / TILE_SIZE + 0.5);
-    if (Math.abs(col) > GRID_RADIUS || Math.abs(row) > GRID_RADIUS) return undefined;
-    const tile = this.state.tiles[(row + GRID_RADIUS) * (GRID_RADIUS * 2 + 1) + col + GRID_RADIUS];
-    return tile && (tile.state === "solid" || tile.state === "warning") ? tile : undefined;
+    const tile = this.tilesById.get(this.cellId(col, row));
+    return tile &&
+      (tile.state === "solid" || tile.state === "warning") &&
+      tile.trap?.phase !== "open"
+      ? tile
+      : undefined;
+  }
+
+  private updateStageHazards(dt: number): void {
+    const state = this.state;
+    // Remove both rendering data and collision when an anchor loses support.
+    state.spinners = state.spinners.filter((bar) => this.tileAt(bar.x, bar.z));
+    state.hammers = state.hammers.filter((hammer) => this.tileAt(hammer.pivot.x, hammer.pivot.z));
+    state.bumpers = state.bumpers.filter((bumper) => this.tileAt(bumper.x, bumper.z));
+    for (const bar of state.spinners) {
+      bar.speed = bar.baseSpeed * (1 + Math.min(0.6, state.elapsed * 0.005));
+      bar.angle = (bar.angle + bar.speed * dt) % TWO_PI;
+      const available =
+        (state.safeRing + 0.25) * TILE_SIZE - Math.max(Math.abs(bar.x), Math.abs(bar.z));
+      bar.radius = Math.max(0.8, Math.min(bar.maxRadius, available));
+    }
+    for (const hammer of state.hammers) {
+      hammer.angle = Math.sin(state.elapsed * hammer.speed + hammer.phase) * hammer.amplitude;
+      const swing = Math.sin(hammer.angle) * hammer.length;
+      hammer.x = hammer.pivot.x + (hammer.axis === "x" ? swing : 0);
+      hammer.y = hammer.pivot.y - Math.cos(hammer.angle) * hammer.length;
+      hammer.z = hammer.pivot.z + (hammer.axis === "z" ? swing : 0);
+    }
+    const first = state.spinners[0];
+    state.spinnerAngle = first?.angle ?? 0;
+    state.spinnerSpeed = first?.speed ?? 0;
+    state.spinnerRadius = first?.radius ?? 0;
   }
 
   private beginAction(fighter: Fighter, action: Action, duration: number): void {
@@ -333,8 +438,8 @@ export class GameEngine implements GameController {
     if (fighter.staminaDelay === 0 && fighter.action !== "roll" && fighter.action !== "strong") {
       fighter.stamina = Math.min(MAX_STAMINA, fighter.stamina + dt * 24);
     }
-    let moveX = input.moveX;
-    let moveZ = input.moveZ;
+    let moveX = Number.isFinite(input.moveX) ? input.moveX : 0;
+    let moveZ = Number.isFinite(input.moveZ) ? input.moveZ : 0;
     const movementLength = Math.hypot(moveX, moveZ);
     if (movementLength > 1) {
       moveX /= movementLength;
@@ -403,8 +508,9 @@ export class GameEngine implements GameController {
       fighter.vx += (moveX * WALK_SPEED - fighter.vx) * steering;
       fighter.vz += (moveZ * WALK_SPEED - fighter.vz) * steering;
     }
-    fighter.x += fighter.vx * dt;
-    fighter.z += fighter.vz * dt;
+    const belt = fighter.grounded ? this.tileAt(fighter.x, fighter.z)?.conveyor : undefined;
+    fighter.x += (fighter.vx + (belt ? belt.x * belt.speed : 0)) * dt;
+    fighter.z += (fighter.vz + (belt ? belt.z * belt.speed : 0)) * dt;
     const previousY = fighter.y;
     if (!fighter.grounded) {
       fighter.vy -= GRAVITY * dt;
@@ -421,16 +527,20 @@ export class GameEngine implements GameController {
       fighter.grounded = true;
     }
     if (fighter.y > -0.1 && fighter.y < 1.05) {
-      const distance = Math.hypot(fighter.x, fighter.z);
-      const minimum = HUB_RADIUS + FIGHTER_RADIUS;
-      if (distance < minimum && distance > 0.001) {
-        const direction = normalized(fighter.x, fighter.z);
-        fighter.x = direction.x * minimum;
-        fighter.z = direction.z * minimum;
-        const inwardVelocity = fighter.vx * direction.x + fighter.vz * direction.z;
-        if (inwardVelocity < 0) {
-          fighter.vx -= inwardVelocity * direction.x;
-          fighter.vz -= inwardVelocity * direction.z;
+      for (const bar of this.state.spinners) {
+        const dx = fighter.x - bar.x;
+        const dz = fighter.z - bar.z;
+        const distance = Math.hypot(dx, dz);
+        const minimum = HUB_RADIUS + FIGHTER_RADIUS;
+        if (distance < minimum) {
+          const direction = normalized(dx, dz);
+          fighter.x = bar.x + direction.x * minimum;
+          fighter.z = bar.z + direction.z * minimum;
+          const inwardVelocity = fighter.vx * direction.x + fighter.vz * direction.z;
+          if (inwardVelocity < 0) {
+            fighter.vx -= inwardVelocity * direction.x;
+            fighter.vz -= inwardVelocity * direction.z;
+          }
         }
       }
     }
@@ -528,28 +638,42 @@ export class GameEngine implements GameController {
   }
 
   private resolveHazards(fighter: Fighter): void {
-    if (fighter.y < -0.15 || fighter.y > 1.0) return;
+    if (fighter.y < -0.15) return;
     const state = this.state;
-    const along =
-      fighter.x * Math.cos(state.spinnerAngle) - fighter.z * Math.sin(state.spinnerAngle);
-    const across =
-      fighter.x * Math.sin(state.spinnerAngle) + fighter.z * Math.cos(state.spinnerAngle);
-    if (
-      fighter.y < 0.72 &&
-      Math.abs(along) < state.spinnerRadius + 0.15 &&
-      Math.abs(along) > HUB_RADIUS &&
-      Math.abs(across) < 0.58
-    ) {
-      const side = along >= 0 ? 1 : -1;
-      this.hit(
-        fighter,
-        7,
-        3.9,
-        -Math.sin(state.spinnerAngle) * side,
-        -Math.cos(state.spinnerAngle) * side,
-        null,
-      );
+    for (const bar of state.spinners) {
+      const dx = fighter.x - bar.x;
+      const dz = fighter.z - bar.z;
+      const along = dx * Math.cos(bar.angle) - dz * Math.sin(bar.angle);
+      const across = dx * Math.sin(bar.angle) + dz * Math.cos(bar.angle);
+      if (
+        fighter.y < bar.y + 0.2 &&
+        fighter.y + 1.0 > bar.y - 0.2 &&
+        Math.abs(along) < bar.radius + 0.15 &&
+        Math.abs(along) > HUB_RADIUS &&
+        Math.abs(across) < 0.58
+      ) {
+        const side = (along >= 0 ? 1 : -1) * Math.sign(bar.speed || 1);
+        this.hit(fighter, 7, 3.9, -Math.sin(bar.angle) * side, -Math.cos(bar.angle) * side, null);
+      }
     }
+    for (const hammer of state.hammers) {
+      if (
+        Math.abs(fighter.y + 0.65 - hammer.y) < hammer.radius + 0.6 &&
+        Math.hypot(fighter.x - hammer.x, fighter.z - hammer.z) < hammer.radius + FIGHTER_RADIUS
+      ) {
+        const velocity = Math.cos(state.elapsed * hammer.speed + hammer.phase) * hammer.speed;
+        const sign = Math.sign(velocity || hammer.angle || 1);
+        this.hit(
+          fighter,
+          16,
+          6.3,
+          hammer.axis === "x" ? sign : 0,
+          hammer.axis === "z" ? sign : 0,
+          null,
+        );
+      }
+    }
+    if (fighter.y > 1.0) return;
     for (const bumper of state.bumpers) {
       if (!this.tileAt(bumper.x, bumper.z)) continue;
       const distance = Math.hypot(fighter.x - bumper.x, fighter.z - bumper.z);
@@ -626,7 +750,7 @@ export class GameEngine implements GameController {
     const state = this.state;
     this.cannonTimer -= dt;
     if (this.cannonTimer <= 0 && state.safeRing >= 1) {
-      this.cannonTimer = Math.max(2.5, 5.8 - state.elapsed * 0.015);
+      this.cannonTimer = Math.max(2.1, state.stage.projectileInterval - state.elapsed * 0.012);
       const side = this.cannonSide++ % 4;
       const edge = (state.safeRing + 0.8) * TILE_SIZE;
       const target = state.fighters.filter((fighter) => fighter.alive && fighter.y >= -0.1);
@@ -727,6 +851,229 @@ export class GameEngine implements GameController {
     });
   }
 
+  private updateMeteors(dt: number): void {
+    const state = this.state;
+    const config = state.stage.meteor;
+    this.meteorTimer -= dt;
+    if (config && this.meteorTimer <= 0) {
+      this.meteorTimer = config.interval;
+      const candidates = state.tiles.filter(
+        (tile) =>
+          this.tileAt(tile.x, tile.z) && tile.state === "solid" && tile.trap?.phase !== "warning",
+      );
+      const selected: Tile[] = [];
+      for (let i = 0; i < config.count && candidates.length > 0; i++) {
+        let tile = candidates[Math.floor(this.random() * candidates.length)]!;
+        for (
+          let attempt = 0;
+          attempt < 12 &&
+          selected.some((old) => Math.hypot(old.x - tile.x, old.z - tile.z) < config.radius * 1.6);
+          attempt++
+        ) {
+          tile = candidates[Math.floor(this.random() * candidates.length)]!;
+        }
+        if (selected.some((old) => old.id === tile.id)) continue;
+        selected.push(tile);
+        state.meteors.push({
+          id: this.meteorId++,
+          x: tile.x,
+          z: tile.z,
+          radius: config.radius,
+          warningTime: config.warningTime,
+          timeToImpact: config.warningTime,
+          impactAge: 0,
+          phase: "warning",
+          hitTargets: [],
+        });
+      }
+      if (selected.length > 0) this.topologyVersion++;
+    }
+    for (const meteor of state.meteors) {
+      // A disappearing anchor removes its warning and its hitbox together.
+      if (!this.tileAt(meteor.x, meteor.z)) {
+        meteor.impactAge = 1;
+        continue;
+      }
+      const previousAge = meteor.impactAge;
+      if (meteor.phase === "warning") {
+        meteor.timeToImpact = Math.max(0, meteor.timeToImpact - dt);
+        if (meteor.timeToImpact > 0) continue;
+        meteor.phase = "impact";
+        meteor.impactAge = 0;
+        this.topologyVersion++;
+        this.emit("meteor", meteor.x, 0.1, meteor.z, 0xff9c70);
+        state.shake = Math.max(state.shake, 0.65);
+        for (const fighter of state.fighters) {
+          if (
+            !fighter.alive ||
+            fighter.y < -0.15 ||
+            fighter.y >= 2.8 ||
+            meteor.hitTargets.includes(fighter.id)
+          )
+            continue;
+          if (
+            Math.hypot(fighter.x - meteor.x, fighter.z - meteor.z) <= meteor.radius &&
+            this.hit(fighter, 22, 7.2, fighter.x - meteor.x, fighter.z - meteor.z, null)
+          )
+            meteor.hitTargets.push(fighter.id);
+        }
+      } else {
+        meteor.impactAge += dt;
+      }
+      if (previousAge <= 0.65) {
+        const oldRadius = meteor.radius + Math.min(previousAge / 0.65, 1) * 3.2;
+        const radius = meteor.radius + Math.min(meteor.impactAge / 0.65, 1) * 3.2;
+        for (const fighter of state.fighters) {
+          if (
+            !fighter.alive ||
+            fighter.y < -0.15 ||
+            fighter.y >= 0.85 ||
+            meteor.hitTargets.includes(fighter.id)
+          )
+            continue;
+          const distance = Math.hypot(fighter.x - meteor.x, fighter.z - meteor.z);
+          if (
+            distance >= oldRadius - 0.4 &&
+            distance <= radius + 0.4 &&
+            this.hit(fighter, 10, 4.8, fighter.x - meteor.x, fighter.z - meteor.z, null)
+          )
+            meteor.hitTargets.push(fighter.id);
+        }
+      }
+    }
+    state.meteors = state.meteors.filter((meteor) => meteor.impactAge < 0.9);
+  }
+
+  private nearestSupported(x: number, z: number, safe = false): Tile | undefined {
+    let best: Tile | undefined;
+    let score = Infinity;
+    for (const tile of this.state.tiles) {
+      if (!this.tileAt(tile.x, tile.z) || (safe && !this.safeForBot(tile))) continue;
+      const distance = (tile.x - x) ** 2 + (tile.z - z) ** 2;
+      if (distance < score) {
+        best = tile;
+        score = distance;
+      }
+    }
+    return best;
+  }
+
+  private safeForBot(tile: Tile): boolean {
+    if (!this.tileAt(tile.x, tile.z) || tile.state === "warning" || tile.trap?.phase === "warning")
+      return false;
+    if (
+      this.state.spinners.some(
+        (bar) => Math.hypot(tile.x - bar.x, tile.z - bar.z) < HUB_RADIUS + 0.3,
+      )
+    )
+      return false;
+    return !this.state.meteors.some(
+      (meteor) =>
+        meteor.phase === "warning" &&
+        Math.hypot(tile.x - meteor.x, tile.z - meteor.z) < meteor.radius + 0.35,
+    );
+  }
+
+  private floorAlong(x: number, z: number, targetX: number, targetZ: number): boolean {
+    const length = Math.hypot(targetX - x, targetZ - z);
+    const samples = Math.max(1, Math.ceil(length / 0.4));
+    for (let i = 1; i <= samples; i++) {
+      const tile = this.tileAt(
+        x + ((targetX - x) * i) / samples,
+        z + ((targetZ - z) * i) / samples,
+      );
+      if (!tile || !this.safeForBot(tile)) return false;
+    }
+    return true;
+  }
+
+  /** Cached BFS follows real floor. A jump edge spans at most one missing cell. */
+  private routeBot(
+    fighter: Fighter,
+    targetX: number,
+    targetZ: number,
+  ): { x: number; z: number; jump: boolean } {
+    const start = this.tileAt(fighter.x, fighter.z) ?? this.nearestSupported(fighter.x, fighter.z);
+    const goal =
+      this.nearestSupported(targetX, targetZ, true) ?? this.nearestSupported(targetX, targetZ);
+    if (!start || !goal) return { x: 0, z: 0, jump: false };
+    let cached = this.navigation.get(fighter.id);
+    if (
+      !cached ||
+      cached.start !== start.id ||
+      cached.goal !== goal.id ||
+      cached.version !== this.topologyVersion ||
+      cached.expires < this.state.elapsed
+    ) {
+      const escaping = !this.safeForBot(start);
+      const queue: number[] = [start.id];
+      const previous = new Map<number, number>([[start.id, start.id]]);
+      const jumpEdges = new Set<number>();
+      let best = start;
+      let bestScore = Infinity;
+      for (let cursor = 0; cursor < queue.length; cursor++) {
+        const tile = this.tilesById.get(queue[cursor]!)!;
+        const score =
+          (tile.x - goal.x) ** 2 + (tile.z - goal.z) ** 2 + (this.safeForBot(tile) ? 0 : 1000);
+        if (score < bestScore) {
+          best = tile;
+          bestScore = score;
+        }
+        if (tile.id === goal.id) {
+          best = tile;
+          break;
+        }
+        for (const [dc, dr] of [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+        ] as const) {
+          const adjacent = this.tilesById.get(this.cellId(tile.col + dc, tile.row + dr));
+          if (
+            adjacent &&
+            (this.safeForBot(adjacent) || (escaping && this.tileAt(adjacent.x, adjacent.z))) &&
+            !previous.has(adjacent.id)
+          ) {
+            previous.set(adjacent.id, tile.id);
+            queue.push(adjacent.id);
+          } else if (!adjacent || !this.tileAt(adjacent.x, adjacent.z)) {
+            const landing = this.tilesById.get(this.cellId(tile.col + dc * 2, tile.row + dr * 2));
+            if (landing && this.safeForBot(landing) && !previous.has(landing.id)) {
+              previous.set(landing.id, tile.id);
+              jumpEdges.add(landing.id);
+              queue.push(landing.id);
+            }
+          }
+        }
+      }
+      let next = best.id;
+      while (previous.get(next) !== start.id && previous.get(next) !== next && previous.has(next))
+        next = previous.get(next)!;
+      cached = {
+        start: start.id,
+        goal: goal.id,
+        version: this.topologyVersion,
+        expires: this.state.elapsed + 0.35,
+        next,
+        jump: jumpEdges.has(next),
+      };
+      this.navigation.set(fighter.id, cached);
+    }
+    const next = this.tilesById.get(cached.next)!;
+    const atGoal = next.id === start.id;
+    const x = atGoal
+      ? clamp(targetX, next.x - TILE_SIZE * 0.22, next.x + TILE_SIZE * 0.22)
+      : next.x;
+    const z = atGoal
+      ? clamp(targetZ, next.z - TILE_SIZE * 0.22, next.z + TILE_SIZE * 0.22)
+      : next.z;
+    const distance = Math.hypot(x - fighter.x, z - fighter.z);
+    return distance < 0.12
+      ? { x: 0, z: 0, jump: false }
+      : { ...normalized(x - fighter.x, z - fighter.z), jump: cached.jump };
+  }
+
   private eliminate(fighter: Fighter): void {
     fighter.alive = false;
     fighter.placement = this.state.fighters.filter((other) => other.alive).length + 1;
@@ -747,11 +1094,25 @@ export class GameEngine implements GameController {
   }
 
   private checkWinner(): void {
-    const survivors = this.state.fighters.filter((fighter) => fighter.alive);
+    const state = this.state;
+    if (state.phase !== "playing") return;
+    const survivors = state.fighters.filter((fighter) => fighter.alive);
     if (survivors.length > 1) return;
-    this.state.phase = "finished";
-    this.state.winnerId = survivors[0]?.id ?? null;
+    state.phase = "finished";
+    state.winnerId = survivors[0]?.id ?? null;
     if (survivors[0]) survivors[0].placement = 1;
+    if (!state.series.history.some((result) => result.round === state.series.round)) {
+      state.series.history.push({
+        round: state.series.round,
+        stageId: state.stage.id,
+        winnerId: state.winnerId,
+      });
+      if (state.winnerId !== null) {
+        state.series.wins[state.winnerId] = (state.series.wins[state.winnerId] ?? 0) + 1;
+        if (state.series.wins[state.winnerId]! >= state.series.targetWins)
+          state.series.championId = state.winnerId;
+      }
+    }
     this.emit(
       "finish",
       survivors[0]?.x ?? 0,
@@ -765,14 +1126,17 @@ export class GameEngine implements GameController {
   private botInput(fighter: Fighter, dt: number): InputFrame {
     const input: InputFrame = { ...EMPTY_INPUT };
     fighter.aiTimer -= dt;
-    if (fighter.y < -0.1) {
-      const direction = normalized(-fighter.x, -fighter.z);
-      input.moveX = direction.x;
-      input.moveZ = direction.z;
-      return input;
-    }
     const state = this.state;
     const difficulty = state.options.difficulty;
+    if (fighter.y < -0.1) {
+      const landing = this.nearestSupported(fighter.x, fighter.z);
+      if (landing) {
+        const direction = normalized(landing.x - fighter.x, landing.z - fighter.z);
+        input.moveX = direction.x;
+        input.moveZ = direction.z;
+      }
+      return input;
+    }
     let target: Fighter | undefined;
     let closestSquared = Infinity;
     for (const candidate of state.fighters) {
@@ -784,73 +1148,108 @@ export class GameEngine implements GameController {
       }
     }
     if (!target) return input;
-    const nextRing = state.warning ? Math.max(0, state.safeRing - 1) : state.safeRing;
-    const safeEdge = Math.max(0.7, (nextRing + 0.5) * TILE_SIZE - 2.0);
-    let dx = target.x - fighter.x;
-    let dz = target.z - fighter.z;
-    const distance = Math.hypot(dx, dz);
-    const atEdge = Math.abs(fighter.x) > safeEdge || Math.abs(fighter.z) > safeEdge;
-    if (atEdge) {
-      dx = clamp(fighter.x, -safeEdge * 0.8, safeEdge * 0.8) - fighter.x;
-      dz = clamp(fighter.z, -safeEdge * 0.8, safeEdge * 0.8) - fighter.z;
+    const distance = Math.sqrt(closestSquared);
+    const currentTile = this.tileAt(fighter.x, fighter.z);
+    const zoneTarget = safeZoneNavigationTarget(state, fighter);
+    const atRisk = !currentTile || !this.safeForBot(currentTile) || zoneTarget !== null;
+    let desiredX = target.x;
+    let desiredZ = target.z;
+    if (zoneTarget) {
+      desiredX = zoneTarget.x;
+      desiredZ = zoneTarget.z;
+    } else if (atRisk) {
+      const refuge = this.nearestSupported(fighter.x, fighter.z, true);
+      if (refuge) {
+        desiredX = refuge.x;
+        desiredZ = refuge.z;
+      }
     } else if (fighter.stamina < 28 && distance < 3) {
-      const away = normalized(-dx, -dz);
-      dx = away.x + fighter.aiStrafe * away.z * 0.5;
-      dz = away.z - fighter.aiStrafe * away.x * 0.5;
+      const away = normalized(fighter.x - target.x, fighter.z - target.z);
+      desiredX = fighter.x + away.x * 2;
+      desiredZ = fighter.z + away.z * 2;
     } else if (distance < 1.3) {
-      const toTarget = normalized(dx, dz);
-      dx = toTarget.z * fighter.aiStrafe * 0.55;
-      dz = -toTarget.x * fighter.aiStrafe * 0.55;
+      const toTarget = normalized(target.x - fighter.x, target.z - fighter.z);
+      desiredX = fighter.x + toTarget.z * fighter.aiStrafe;
+      desiredZ = fighter.z - toTarget.x * fighter.aiStrafe;
     }
-    const move = normalized(dx, dz);
-    input.moveX = move.x * (difficulty === "easy" ? 0.77 : 0.93);
-    input.moveZ = move.z * (difficulty === "easy" ? 0.77 : 0.93);
-    // Do not run through the hub: choose a consistent tangent around it.
-    const radius = Math.hypot(fighter.x, fighter.z);
-    if (radius < 2 && fighter.x * input.moveX + fighter.z * input.moveZ < 0) {
-      const radial = normalized(fighter.x, fighter.z);
-      input.moveX = radial.z * fighter.aiStrafe;
-      input.moveZ = -radial.x * fighter.aiStrafe;
-    }
+    const direct = normalized(desiredX - fighter.x, desiredZ - fighter.z);
+    const lookahead = Math.min(1.3, Math.hypot(desiredX - fighter.x, desiredZ - fighter.z));
+    const directSafe =
+      !atRisk &&
+      this.floorAlong(
+        fighter.x,
+        fighter.z,
+        fighter.x + direct.x * lookahead,
+        fighter.z + direct.z * lookahead,
+      ) &&
+      this.floorAlong(fighter.x, fighter.z, desiredX, desiredZ);
+    const route = directSafe
+      ? { ...direct, jump: false }
+      : this.routeBot(fighter, desiredX, desiredZ);
+    const movementScale = difficulty === "easy" ? 0.77 : 0.93;
+    input.moveX = route.x * movementScale;
+    input.moveZ = route.z * movementScale;
     for (const bumper of state.bumpers) {
-      if (!this.tileAt(bumper.x, bumper.z)) continue;
       const bx = fighter.x - bumper.x;
       const bz = fighter.z - bumper.z;
       const bd = Math.hypot(bx, bz);
       if (bd < 1.65 && bd > 0) {
-        input.moveX += (bx / bd) * (1.65 - bd) * 2;
-        input.moveZ += (bz / bd) * (1.65 - bd) * 2;
+        const pushX = input.moveX + (bx / bd) * (1.65 - bd) * 2;
+        const pushZ = input.moveZ + (bz / bd) * (1.65 - bd) * 2;
+        if (this.tileAt(fighter.x + pushX * 0.5, fighter.z + pushZ * 0.5)) {
+          input.moveX = pushX;
+          input.moveZ = pushZ;
+        }
       }
     }
-    const anticipatedX = fighter.x + input.moveX * 0.65;
-    const anticipatedZ = fighter.z + input.moveZ * 0.65;
-    if (
-      !this.tileAt(anticipatedX, anticipatedZ) ||
-      Math.abs(anticipatedX) > safeEdge + 0.2 ||
-      Math.abs(anticipatedZ) > safeEdge + 0.2
-    ) {
-      const inward = normalized(-fighter.x, -fighter.z);
-      input.moveX = inward.x;
-      input.moveZ = inward.z;
-    }
     if (fighter.action !== "idle") return input;
-    // Read the future bar position to jump before contact. Each difficulty has deliberate mistakes.
-    const lead = difficulty === "hard" ? 0.24 : difficulty === "easy" ? 0.11 : 0.19;
-    const futureAngle = state.spinnerAngle + state.spinnerSpeed * lead;
-    const across = fighter.x * Math.sin(futureAngle) + fighter.z * Math.cos(futureAngle);
-    const along = fighter.x * Math.cos(futureAngle) - fighter.z * Math.sin(futureAngle);
-    if (
-      fighter.grounded &&
-      Math.abs(across) < 0.88 &&
-      Math.abs(along) < state.spinnerRadius + 0.2 &&
-      Math.abs(along) > HUB_RADIUS &&
-      fighter.aiTimer < 0.1
-    ) {
+    if (route.jump && fighter.grounded && fighter.vx * route.x + fighter.vz * route.z > 2.8) {
       input.jump = true;
-      fighter.aiTimer = difficulty === "easy" ? 0.8 : 0.38;
       return input;
     }
-    if (fighter.aiTimer > 0 || atEdge) return input;
+    const lead = difficulty === "hard" ? 0.24 : difficulty === "easy" ? 0.11 : 0.19;
+    for (const bar of state.spinners) {
+      const futureAngle = bar.angle + bar.speed * lead;
+      const dx = fighter.x - bar.x;
+      const dz = fighter.z - bar.z;
+      const across = dx * Math.sin(futureAngle) + dz * Math.cos(futureAngle);
+      const along = dx * Math.cos(futureAngle) - dz * Math.sin(futureAngle);
+      if (
+        fighter.grounded &&
+        Math.abs(across) < 0.88 &&
+        Math.abs(along) < bar.radius + 0.2 &&
+        Math.abs(along) > HUB_RADIUS &&
+        (difficulty !== "easy" || fighter.aiTimer < 0.1)
+      ) {
+        input.jump = true;
+        fighter.aiTimer = difficulty === "easy" ? 0.8 : 0.38;
+        return input;
+      }
+    }
+    for (const meteor of state.meteors) {
+      const d = Math.hypot(fighter.x - meteor.x, fighter.z - meteor.z);
+      const nextWave = meteor.radius + clamp((meteor.impactAge + 0.15) / 0.65, 0, 1) * 3.2;
+      if (
+        fighter.grounded &&
+        meteor.phase === "impact" &&
+        meteor.impactAge < 0.65 &&
+        Math.abs(d - nextWave) < 0.9
+      ) {
+        input.jump = true;
+        return input;
+      }
+    }
+    if (
+      fighter.grounded &&
+      fighter.stamina >= ROLL_COST &&
+      state.hammers.some(
+        (hammer) => hammer.y < 1.7 && Math.hypot(fighter.x - hammer.x, fighter.z - hammer.z) < 1.7,
+      )
+    ) {
+      input.roll = true;
+      return input;
+    }
+    if (fighter.aiTimer > 0 || atRisk || route.jump) return input;
     fighter.aiTimer =
       (difficulty === "hard" ? 0.16 : difficulty === "easy" ? 0.56 : 0.3) + this.random() * 0.28;
     if (this.random() < 0.13) fighter.aiStrafe *= -1;
@@ -859,17 +1258,17 @@ export class GameEngine implements GameController {
         ball.ownerId !== fighter.id && Math.hypot(ball.x - fighter.x, ball.z - fighter.z) < 3.1,
     );
     const targetAttacking = isAttack(target.action) && target.actionTime < 0.3;
-    if (projectile && fighter.grounded && fighter.stamina >= 25 && difficulty !== "easy") {
+    if (projectile && fighter.grounded && fighter.stamina >= 25 && difficulty !== "easy")
       input.strong = true;
-    } else if (
+    else if (
       targetAttacking &&
       distance < 2.3 &&
       fighter.grounded &&
       fighter.stamina >= ROLL_COST + 10 &&
       this.random() < 0.5
-    ) {
+    )
       input.roll = true;
-    } else if (fighter.item && distance > 2.6 && distance < 8) {
+    else if (fighter.item && distance > 2.6 && distance < 8) {
       fighter.facing = Math.atan2(target.x - fighter.x, target.z - fighter.z);
       input.moveX = 0;
       input.moveZ = 0;
@@ -880,9 +1279,7 @@ export class GameEngine implements GameController {
       input.moveZ = 0;
       if (fighter.stamina >= 32 && (distance > 1.35 || this.random() < 0.5)) input.strong = true;
       else if (distance < 1.6) input.weak = true;
-    } else if (!atEdge && fighter.grounded && distance < 3.5 && this.random() < 0.1) {
-      input.jump = true;
-    }
+    } else if (fighter.grounded && distance < 3.5 && this.random() < 0.1) input.jump = true;
     return input;
   }
 }

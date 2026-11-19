@@ -10,8 +10,11 @@ const FIXED_STEP = 1 / 60;
 function snapshot(state: GameState): GameState {
   return {
     ...state,
-    options: { ...state.options },
-    fighters: state.fighters.map((f) => ({ ...f })),
+    options: { ...state.options, playerAppearance: { ...state.options.playerAppearance } },
+    series: { ...state.series, wins: [...state.series.wins], history: [...state.series.history] },
+    stage: { ...state.stage },
+    safeZone: state.safeZone ? { ...state.safeZone } : null,
+    fighters: state.fighters.map((f) => ({ ...f, appearance: { ...f.appearance } })),
     events: [...state.events],
   };
 }
@@ -57,6 +60,22 @@ export function App() {
   );
 
   const retry = useCallback(() => start(engine.current.state.options), [start]);
+  const nextRound = useCallback(() => {
+    sound.current?.unlock();
+    input.current?.clear();
+    engine.current.nextRound();
+    publish();
+  }, [publish]);
+  const preview = useCallback(
+    (options: Partial<GameOptions>) => {
+      if (engine.current.state.phase !== "lobby") return;
+      engine.current.reset(options);
+      input.current?.clear();
+      lastEvent.current = 0;
+      publish();
+    },
+    [publish],
+  );
   const home = useCallback(() => {
     engine.current.reset(engine.current.state.options);
     input.current?.clear();
@@ -210,6 +229,8 @@ export function App() {
         onTogglePause={togglePause}
         onHome={home}
         onRetry={retry}
+        onNextRound={nextRound}
+        onPreview={preview}
         onToggleMute={toggleMute}
         onFullscreen={fullscreen}
         onAction={action}

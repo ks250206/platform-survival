@@ -26,13 +26,31 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      testMatch: "game.spec.ts",
       use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } },
     },
+    {
+      name: "series-flows",
+      testMatch: "series.spec.ts",
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1440, height: 900 },
+        baseURL: "http://127.0.0.1:5174/platform-survival/",
+      },
+    },
   ],
-  webServer: {
-    command: "pnpm preview --host 127.0.0.1 --port 4173",
-    url: "http://127.0.0.1:4173/platform-survival/",
-    reuseExistingServer: !process.env.CI,
-    timeout: 30_000,
-  },
+  webServer: [
+    {
+      command: "pnpm preview --host 127.0.0.1 --port 4173",
+      url: "http://127.0.0.1:4173/platform-survival/",
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+    {
+      command: "pnpm dev --host 127.0.0.1 --port 5174",
+      url: "http://127.0.0.1:5174/platform-survival/",
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  ],
 });

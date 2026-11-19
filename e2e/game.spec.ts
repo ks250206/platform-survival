@@ -8,9 +8,11 @@ test("24-fighter battle boots, consumes stamina, pauses and restarts", async ({
   await page.goto("./");
   const start = page.getByRole("button", { name: "バトルスタート" });
   await expect(start).toBeEnabled({ timeout: 45_000 });
-  await expect(
-    page.getByRole("group", { name: "対戦人数" }).getByRole("button", { name: "24体" }),
-  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".lobby-kicker")).toContainText("24-WAY");
+  await expect(page.getByRole("button", { name: /3勝先取/ })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await expect(page.locator("canvas")).toHaveCount(1);
   await page.screenshot({ path: testInfo.outputPath("desktop-lobby.png") });
   await start.click();
